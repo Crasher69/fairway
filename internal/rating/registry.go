@@ -247,3 +247,9 @@ func (r *Registry) Domains() []string {
 	sort.Strings(out)
 	return out
 }
+
+// EffectiveEpsilon и EffectiveSharpness отдают параметры, с которыми реально
+// работает выбор. Нужны админке: доля трафика в таблице должна совпадать
+// с тем, что делает Select, а не с константами по умолчанию.
+func (r *Registry) EffectiveEpsilon() float64   { return r.epsilon() }
+func (r *Registry) EffectiveSharpness() float64 { return r.sharpness() }

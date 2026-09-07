@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fairway</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="logo">Fairway</span>
+      <span class="muted" id="version"></span>
+    </div>
+    <div class="facts">
+      <div><span class="muted">запросов</span> <b id="requests">—</b></div>
+      <div><span class="muted">прокси</span> <b id="proxies">—</b></div>
+      <div><span class="muted">доменов</span> <b id="domains">—</b></div>
+      <div><span class="muted">аптайм</span> <b id="uptime">—</b></div>
+      <div><span class="muted">сертификатов в кэше</span> <b id="certs">—</b></div>
+      <a id="ca-link" href="ca" download>Скачать корневой сертификат</a>
+    </div>
+    <div class="ca muted" id="ca-info"></div>
+  </header>
+
+  <main>
+    <aside>
+      <h2>Домены</h2>
+      <p class="hint" id="domains-hint">Трафика ещё не было — домены появятся,
+        как только через прокси пойдут запросы.</p>
+      <ul id="domain-list"></ul>
+    </aside>
+
+    <section>
+      <div id="empty" class="empty">Выберите домен слева</div>
+
+      <div id="detail" hidden>
+        <h1 id="domain-title"></h1>
+        <div class="rule" id="rule"></div>
+
+        <h2>Прокси домена</h2>
+        <table id="proxy-table">
+          <thead>
+            <tr>
+              <th>Прокси</th>
+              <th>Статус</th>
+              <th class="num">Сейчас</th>
+              <th class="num">Connect</th>
+              <th class="num">TTFB</th>
+              <th class="num">Скорость</th>
+              <th class="num">Ошибок</th>
+              <th class="num">Цена</th>
+              <th class="num">Доля</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+
+        <h2>TTFB за последние минуты</h2>
+        <div id="chart-wrap"><svg id="chart" preserveAspectRatio="none"></svg></div>
+        <div class="legend" id="legend"></div>
+
+        <h2>Живой лог</h2>
+        <table id="log-table">
+          <thead>
+            <tr>
+              <th>Время</th>
+              <th>Прокси</th>
+              <th class="num">Статус</th>
+              <th class="num">Connect</th>
+              <th class="num">TTFB</th>
+              <th class="num">Объём</th>
+              <th class="num">Всего</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

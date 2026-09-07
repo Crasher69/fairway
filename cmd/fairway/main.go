@@ -3,6 +3,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,14 +14,17 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"fairway/internal/admin"
 	"fairway/internal/config"
 	"fairway/internal/forward"
 	"fairway/internal/mitmca"
 	"fairway/internal/proxypool"
 	"fairway/internal/rating"
+	"fairway/internal/stats"
 )
 
 var version = "dev"
@@ -36,14 +41,17 @@ func (l *upstreamList) Set(v string) error {
 func main() {
 	var upstreams upstreamList
 	var (
-		proxyAddr    = flag.String("proxy", ":8080", "адрес прокси-сервера")
-		adminAddr    = flag.String("admin", "127.0.0.1:8081", "адрес админки (только loopback по умолчанию)")
-		configPath   = flag.String("config", "config.json", "файл конфигурации; создаётся, если его нет")
-		dataDir      = flag.String("data", "./data", "каталог для CA и снапшотов рейтингов")
-		dialTimeout  = flag.Duration("dial-timeout", 15*time.Second, "таймаут подключения к цели через апстрим")
-		pollInterval = flag.Duration("config-poll", config.DefaultPollInterval, "как часто перечитывать конфиг")
-		ratingSave   = flag.Duration("ratings-save", 30*time.Second, "как часто сохранять рейтинги на диск")
-		exportCA     = flag.String("export-ca", "", "сохранить корневой сертификат в указанный файл и выйти")
+		proxyAddr      = flag.String("proxy", ":8080", "адрес прокси-сервера")
+		adminAddr      = flag.String("admin", "127.0.0.1:8081", "адрес админки (только loopback по умолчанию)")
+		configPath     = flag.String("config", "config.json", "файл конфигурации; создаётся, если его нет")
+		dataDir        = flag.String("data", "./data", "каталог для CA и снапшотов рейтингов")
+		dialTimeout    = flag.Duration("dial-timeout", 15*time.Second, "таймаут подключения к цели через апстрим")
+		pollInterval   = flag.Duration("config-poll", config.DefaultPollInterval, "как часто перечитывать конфиг")
+		ratingSave     = flag.Duration("ratings-save", 30*time.Second, "как часто сохранять рейтинги на диск")
+		exportCA       = flag.String("export-ca", "", "сохранить корневой сертификат в указанный файл и выйти")
+		adminTokenFlag = flag.String("admin-token", "", "токен доступа к админке; пустой — сгенерировать случайный")
+		historySize    = flag.Int("history", stats.DefaultCapacity, "сколько последних запросов держать для админки")
+		verbose        = flag.Bool("v", false, "писать в лог каждый запрос")
 	)
 	flag.Var(&upstreams, "upstream", "апстрим scheme://user:pass@host:port в обход конфига; можно повторять")
 	flag.Parse()
@@ -74,6 +82,7 @@ func main() {
 	if err != nil {
 		logger.Fatal(err)
 	}
+	currentConfig.Store(cfg)
 	describe(logger, cfg, pool)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -113,19 +122,38 @@ func main() {
 		)
 	}
 
+	issuer := mitmca.NewIssuer(ca)
+	recorder := stats.New(*historySize)
+
 	srv := &forward.Server{
 		Pick:        router(pool),
-		Issuer:      mitmca.NewIssuer(ca),
+		Issuer:      issuer,
 		DialTimeout: *dialTimeout,
 		Logger:      logger,
 		Observe: func(s forward.Sample) {
 			ratings.Observe(s)
-			logSample(logger, s)
+			recorder.Observe(s)
+			if *verbose {
+				logSample(logger, s)
+			}
 		},
 	}
 
-	logger.Printf("fairway %s: прокси на %s, конфиг %s, данные в %s (админка на %s появится на этапе 5)",
-		version, *proxyAddr, *configPath, *dataDir, *adminAddr)
+	adminSrv := &admin.Server{
+		Pool:     pool,
+		Ratings:  ratings,
+		Recorder: recorder,
+		Issuer:   issuer,
+		CA:       ca,
+		Config:   func() *config.Config { return currentConfig.Load().(*config.Config) },
+		Token:    adminToken(logger, *adminTokenFlag),
+		Version:  version,
+		Started:  time.Now(),
+	}
+	startAdmin(ctx, logger, *adminAddr, adminSrv)
+
+	logger.Printf("fairway %s: прокси на %s, конфиг %s, данные в %s",
+		version, *proxyAddr, *configPath, *dataDir)
 
 	httpSrv := &http.Server{
 		Addr:              *proxyAddr,
@@ -228,3 +256,54 @@ func describe(logger *log.Logger, cfg *config.Config, pool *proxypool.Pool) {
 }
 
 func round(d time.Duration) time.Duration { return d.Round(time.Millisecond) }
+
+// currentConfig хранит конфиг, применённый последним: админка должна
+// показывать то, что реально работает, а не то, что было при запуске.
+var currentConfig atomic.Value
+
+// adminToken возвращает токен доступа, генерируя случайный, если не задан.
+// Пустой токен разрешён только явным -admin-token="" и сопровождается
+// предупреждением: панель управления прокси без пароля — плохая идея.
+func adminToken(logger *log.Logger, given string) string {
+	if given != "" {
+		return given
+	}
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		logger.Fatalf("не удалось сгенерировать токен админки: %v", err)
+	}
+	return hex.EncodeToString(buf)
+}
+
+// startAdmin поднимает панель управления на отдельном порту.
+func startAdmin(ctx context.Context, logger *log.Logger, addr string, srv *admin.Server) {
+	if !admin.IsLoopback(addr) {
+		logger.Printf("ВНИМАНИЕ: админка слушает %s, а не loopback — она будет доступна из сети", addr)
+	}
+	httpSrv := &http.Server{
+		Addr:              addr,
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 30 * time.Second,
+	}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(shutdownCtx)
+	}()
+	go func() {
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Printf("админка не поднялась: %v", err)
+		}
+	}()
+	logger.Printf("админка: http://%s/?token=%s", displayAddr(addr), srv.Token)
+}
+
+// displayAddr делает адрес кликабельным: ":8081" сам по себе в браузер не
+// вставишь, нужен хост.
+func displayAddr(addr string) string {
+	if strings.HasPrefix(addr, ":") {
+		return "127.0.0.1" + addr
+	}
+	return addr
+}
