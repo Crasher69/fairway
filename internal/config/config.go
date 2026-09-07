@@ -53,15 +53,17 @@ type Domain struct {
 	List    string `json:"list"`
 	// MaxParallelProxies — сколько РАЗНЫХ прокси листа могут работать
 	// на этот домен одновременно. 0 — взять из defaults, -1 — без ограничения.
-	MaxParallelProxies int `json:"max_parallel_proxies"`
+	MaxParallelProxies int `json:"max_parallel_proxies,omitempty"`
 	// MaxConnsPerProxy — лимит одновременных соединений на один прокси.
 	// Не даёт задушить лидера рейтинга. 0 — взять из defaults, -1 — без ограничения.
-	MaxConnsPerProxy int `json:"max_conns_per_proxy"`
+	MaxConnsPerProxy int `json:"max_conns_per_proxy,omitempty"`
 	// MITM — расшифровывать TLS или пробрасывать туннель как есть.
 	// Не задано (null или поля нет) — наследуется из defaults.
 	MITM *bool `json:"mitm,omitempty"`
 	// BanDuration — на сколько исключать прокси из ротации после бана.
-	BanDuration Duration `json:"ban_duration"`
+	// Ноль не пишем в файл: он значит «наследовать», а явный "0s" читался бы
+	// как «баны выключены».
+	BanDuration Duration `json:"ban_duration,omitempty"`
 }
 
 // Duration — time.Duration, записанный в JSON строкой: "5m", "1h30m".
@@ -172,8 +174,10 @@ func (c *Config) Validate() error {
 	if c.Defaults.List != "" && !listNames[c.Defaults.List] {
 		return fmt.Errorf("defaults: нет листа с именем %q", c.Defaults.List)
 	}
-	if c.Defaults.MaxParallelProxies < 0 || c.Defaults.MaxConnsPerProxy < 0 {
-		return fmt.Errorf("defaults: лимиты не могут быть отрицательными")
+	// -1 в defaults означает то же, что и в правиле домена: без ограничения.
+	// Ноль там значит ровно это же, но запрещать -1 было бы неожиданно.
+	if c.Defaults.MaxParallelProxies < -1 || c.Defaults.MaxConnsPerProxy < -1 {
+		return fmt.Errorf("defaults: лимит меньше -1 бессмыслен (0 и -1 — без ограничения)")
 	}
 	return nil
 }

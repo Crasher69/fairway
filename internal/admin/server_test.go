@@ -368,3 +368,37 @@ func TestIsLoopback(t *testing.T) {
 		}
 	}
 }
+
+// TestHealthzIsOpen — проба живости обязана работать без токена, иначе
+// Docker и systemd будут считать здоровый процесс мёртвым.
+func TestHealthzIsOpen(t *testing.T) {
+	_, ts := newTestServer(t, "секрет")
+
+	resp, err := http.Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("статус %d, проба должна отвечать без токена", resp.StatusCode)
+	}
+
+	// А всё остальное по-прежнему закрыто.
+	other, err := http.Get(ts.URL + "/api/overview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other.Body.Close()
+	if other.StatusCode != http.StatusUnauthorized {
+		t.Errorf("api без токена вернул %d", other.StatusCode)
+	}
+}
+
+func TestOverviewHasRuntime(t *testing.T) {
+	_, ts := newTestServer(t, "")
+	var got overviewResponse
+	getJSON(t, ts.URL, "/api/overview", &got)
+	if got.Goroutines <= 0 || got.HeapMB <= 0 {
+		t.Errorf("рантайм не заполнен: горутин %d, куча %v МБ", got.Goroutines, got.HeapMB)
+	}
+}

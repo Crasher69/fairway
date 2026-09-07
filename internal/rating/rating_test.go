@@ -409,3 +409,32 @@ func TestLoadBrokenFileIsAnError(t *testing.T) {
 		t.Error("битый файл рейтингов должен возвращать ошибку")
 	}
 }
+
+// TestBanIsNotExtendedWhileActive — под нагрузкой в полёте остаются десятки
+// запросов, и каждый упавший пытался бы забанить заново.
+func TestBanIsNotExtendedWhileActive(t *testing.T) {
+	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	r := NewRegistry()
+	r.Now = func() time.Time { return now }
+	r.BanDuration = func(string) time.Duration { return 5 * time.Minute }
+
+	var notifications int
+	r.OnBan = func(string, string, string, time.Time) { notifications++ }
+
+	fail := sample("example.com", "p", 0, 0, 0, 0, errors.New("connection refused"))
+	for i := 0; i < 20; i++ {
+		r.Observe(fail)
+	}
+
+	stats := r.Stats("example.com", "p")
+	_, until, _ := stats.Banned(now)
+	if until != now.Add(5*time.Minute) {
+		t.Errorf("бан до %s, ожидалось %s — срок уехал от последующих ошибок", until, now.Add(5*time.Minute))
+	}
+	if notifications != 1 {
+		t.Errorf("уведомлений о бане: %d, ожидалось 1", notifications)
+	}
+	if snap := stats.Snapshot(); snap.Bans != 1 {
+		t.Errorf("счётчик банов: %d, ожидался 1", snap.Bans)
+	}
+}

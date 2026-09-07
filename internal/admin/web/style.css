@@ -146,3 +146,71 @@ td.name { font-family: var(--mono); }
   main { grid-template-columns: 1fr; }
   aside { position: static; }
 }
+
+/* --- вкладки и настройки --- */
+
+.tabs { flex-basis: 100%; display: flex; gap: 8px; margin-top: 4px; }
+
+.tab {
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  padding: 5px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+
+.tab:hover { color: var(--text); }
+.tab.active { background: #263248; color: var(--text); border-color: #35507a; }
+
+.config { padding: 20px; max-width: 1100px; }
+.config-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.config h2 { margin-top: 26px; }
+.config code { font-family: var(--mono); font-size: 12px; }
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.row label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+
+input, select, button {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 13px;
+}
+
+input[type="number"] { width: 130px; }
+input[type="checkbox"] { width: auto; padding: 0; }
+
+button {
+  cursor: pointer;
+  border-color: #35507a;
+  background: #263248;
+}
+
+button:hover { background: #2d3d59; }
+
+button.danger { border-color: #5a2b2d; background: #3a2224; color: #ffb3b5; }
+button.danger:hover { background: #4a2a2c; }
+
+.error {
+  background: rgba(229,72,77,.12);
+  border: 1px solid rgba(229,72,77,.4);
+  color: #ffb3b5;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 12px 0;
+  white-space: pre-wrap;
+  font-size: 13px;
+}

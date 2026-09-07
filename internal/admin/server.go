@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"sort"
 	"strconv"
 	"time"
@@ -30,7 +31,9 @@ type Server struct {
 	CA       *mitmca.CA
 	// Config отдаёт актуальный конфиг: он меняется на лету, поэтому функция,
 	// а не снимок.
-	Config  func() *config.Config
+	Config func() *config.Config
+	// Editor разрешает правку конфига из панели. nil — панель только читает.
+	Editor  *Editor
 	Token   string
 	Version string
 	Started time.Time
@@ -45,9 +48,24 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/proxies", s.proxies)
 	mux.HandleFunc("GET /api/events", s.events)
 	mux.HandleFunc("GET /api/stream", s.stream)
+	mux.HandleFunc("GET /api/config", s.config)
+	mux.HandleFunc("POST /api/config/reload", s.reload)
+	mux.HandleFunc("POST /api/proxies", s.addProxy)
+	mux.HandleFunc("DELETE /api/proxies/{name}", s.deleteProxy)
+	mux.HandleFunc("PUT /api/lists", s.saveList)
+	mux.HandleFunc("DELETE /api/lists/{name}", s.deleteList)
+	mux.HandleFunc("PUT /api/domains", s.saveDomain)
+	mux.HandleFunc("DELETE /api/domains/{pattern}", s.deleteDomain)
+	mux.HandleFunc("PUT /api/defaults", s.saveDefaults)
 	mux.HandleFunc("GET /ca", s.downloadCA)
 	mux.Handle("GET /", staticHandler())
-	return s.authorized(mux)
+
+	// Проба живости стоит перед проверкой токена: Docker и systemd взять его
+	// неоткуда, а данных эндпоинт не раскрывает.
+	root := http.NewServeMux()
+	root.HandleFunc("GET /healthz", s.healthz)
+	root.Handle("/", s.authorized(mux))
+	return root
 }
 
 // authorized пускает по токену из заголовка, query или cookie.
@@ -96,8 +114,13 @@ type overviewResponse struct {
 	Domains    int       `json:"domains"`
 	CASubject  string    `json:"ca_subject"`
 	CAExpires  time.Time `json:"ca_expires"`
+	ConfigPath string    `json:"config_path"`
 	CertsCache int       `json:"certs_cached"`
 	Watchers   int       `json:"watchers"`
+	// Рантайм пригождается в проде: по числу горутин видно утечку соединений,
+	// по куче — не пора ли поднимать лимиты.
+	Goroutines int     `json:"goroutines"`
+	HeapMB     float64 `json:"heap_mb"`
 }
 
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
@@ -112,6 +135,14 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		Domains:   len(cfg.Domains),
 		Watchers:  s.Recorder.Subscribers(),
 	}
+	if s.Editor != nil {
+		resp.ConfigPath = s.Editor.Path
+	}
+
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	resp.Goroutines = runtime.NumGoroutine()
+	resp.HeapMB = float64(mem.HeapAlloc) / (1024 * 1024)
 	if s.CA != nil {
 		resp.CASubject = s.CA.Subject()
 		resp.CAExpires = s.CA.NotAfter()
@@ -414,4 +445,11 @@ func IsLoopback(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// healthz — проба живости для Docker и systemd. Намеренно без токена:
+// пробе неоткуда его взять, а никаких данных эндпоинт не раскрывает.
+func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Write([]byte("ok\n"))
 }

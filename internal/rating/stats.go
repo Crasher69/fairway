@@ -136,6 +136,13 @@ func (s *Stats) banLocked(now time.Time, d time.Duration, reason string) string 
 	if d <= 0 {
 		return ""
 	}
+	// Уже забанен — не продлеваем и не сообщаем повторно. Под нагрузкой в
+	// полёте остаются десятки запросов, каждый из них падает и пытался бы
+	// забанить заново: лог забивался бы, а срок бана уезжал вперёд от ошибок,
+	// которые начались ещё до него.
+	if now.Before(s.bannedUntil) {
+		return ""
+	}
 	s.bannedUntil = now.Add(d)
 	s.banReason = reason
 	s.bans++

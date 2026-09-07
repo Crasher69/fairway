@@ -61,6 +61,9 @@ async function refreshOverview() {
   $('domains').textContent = data.domains;
   $('uptime').textContent = duration(data.uptime_sec);
   $('certs').textContent = data.certs_cached;
+  $('goroutines').textContent = data.goroutines;
+  $('heap').textContent = data.heap_mb.toFixed(1) + ' МБ';
+  if (data.config_path) $('config-note').textContent = data.config_path;
   if (data.ca_subject) {
     const until = new Date(data.ca_expires).toLocaleDateString('ru-RU');
     $('ca-info').textContent = `${data.ca_subject} — действует до ${until}`;
@@ -349,3 +352,197 @@ function tick() {
 tick();
 setInterval(tick, 2000);
 window.addEventListener('resize', renderChart);
+
+// --- вкладки ---
+
+document.querySelectorAll('.tab').forEach((tab) => {
+  tab.onclick = () => {
+    document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === tab));
+    const config = tab.dataset.view === 'config';
+    $('view-monitor').hidden = config;
+    $('view-config').hidden = !config;
+    if (config) refreshConfig().catch(showConfigError);
+  };
+});
+
+// --- настройки ---
+
+async function send(method, path, body) {
+  const resp = await fetch(path, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await resp.text();
+  if (!resp.ok) {
+    if (resp.status === 501) {
+      // Конфиг собран из флагов -upstream, сохранять его некуда.
+      document.getElementById("config-readonly").hidden = false;
+    }
+    throw new Error(text.trim() || ('статус ' + resp.status));
+  }
+  return text ? JSON.parse(text) : null;
+}
+
+function showConfigError(err) {
+  const box = $('config-error');
+  box.textContent = String(err.message || err);
+  box.hidden = false;
+}
+
+function clearConfigError() {
+  $('config-error').hidden = true;
+}
+
+async function refreshConfig() {
+  const cfg = await api('api/config');
+  renderConfigProxies(cfg.proxies || []);
+  renderConfigLists(cfg.lists || []);
+  renderConfigDomains(cfg.domains || []);
+  fillListSelects(cfg.lists || []);
+  fillDefaults(cfg.defaults || {});
+}
+
+function removeButton(onClick) {
+  const td = document.createElement('td');
+  const button = document.createElement('button');
+  button.className = 'danger';
+  button.textContent = 'Удалить';
+  button.onclick = onClick;
+  td.append(button);
+  return td;
+}
+
+function textCell(value) {
+  const td = document.createElement('td');
+  td.textContent = value ?? '';
+  return td;
+}
+
+function edit(action) {
+  clearConfigError();
+  action().then(refreshConfig).catch(showConfigError);
+}
+
+function renderConfigProxies(proxies) {
+  const body = $('cfg-proxies').querySelector('tbody');
+  body.replaceChildren(...proxies.map((p) => {
+    const tr = document.createElement('tr');
+    const name = textCell(p.name);
+    name.className = 'name';
+    tr.append(
+      name,
+      textCell(p.url),
+      textCell((p.tags || []).join(', ')),
+      removeButton(() => edit(() => send('DELETE', 'api/proxies/' + encodeURIComponent(p.name)))),
+    );
+    return tr;
+  }));
+}
+
+function renderConfigLists(lists) {
+  const body = $('cfg-lists').querySelector('tbody');
+  body.replaceChildren(...lists.map((l) => {
+    const tr = document.createElement('tr');
+    const name = textCell(l.name);
+    name.className = 'name';
+    tr.append(
+      name,
+      textCell((l.proxies || []).join(', ')),
+      removeButton(() => edit(() => send('DELETE', 'api/lists/' + encodeURIComponent(l.name)))),
+    );
+    return tr;
+  }));
+}
+
+function renderConfigDomains(domains) {
+  const body = $('cfg-domains').querySelector('tbody');
+  body.replaceChildren(...domains.map((d) => {
+    const tr = document.createElement('tr');
+    const pattern = textCell(d.pattern);
+    pattern.className = 'name';
+    // mitm может отсутствовать — это «наследовать из defaults», а не «выключено».
+    const mitm = d.mitm === undefined || d.mitm === null ? 'из defaults' : (d.mitm ? 'да' : 'нет');
+    tr.append(
+      pattern,
+      textCell(d.list),
+      textCell(mitm),
+      cell(d.max_parallel_proxies || '—'),
+      cell(d.max_conns_per_proxy || '—'),
+      textCell(d.ban_duration || '—'),
+      removeButton(() => edit(() => send('DELETE', 'api/domains/' + encodeURIComponent(d.pattern)))),
+    );
+    return tr;
+  }));
+}
+
+function fillListSelects(lists) {
+  for (const id of ['domain-list-select', 'defaults-list-select']) {
+    const select = $(id);
+    const previous = select.value;
+    const options = lists.map((l) => new Option(l.name, l.name));
+    if (id === 'defaults-list-select') options.unshift(new Option('— не задан —', ''));
+    select.replaceChildren(...options);
+    select.value = previous;
+  }
+}
+
+function fillDefaults(defaults) {
+  const form = $('save-defaults');
+  form.list.value = defaults.list || '';
+  form.allow_direct.checked = !!defaults.allow_direct;
+  form.mitm.checked = !!defaults.mitm;
+  form.max_parallel_proxies.value = defaults.max_parallel_proxies ?? '';
+  form.max_conns_per_proxy.value = defaults.max_conns_per_proxy ?? '';
+  form.ban_duration.value = defaults.ban_duration || '';
+}
+
+const number = (value) => (value === '' ? 0 : Number(value));
+const list = (value) => value.split(',').map((s) => s.trim()).filter(Boolean);
+
+$('add-proxy').onsubmit = (event) => {
+  event.preventDefault();
+  const form = event.target;
+  const proxy = { name: form.name.value.trim(), url: form.url.value.trim() };
+  const tags = list(form.tags.value);
+  if (tags.length) proxy.tags = tags;
+  edit(() => send('POST', 'api/proxies', proxy).then(() => form.reset()));
+};
+
+$('save-list').onsubmit = (event) => {
+  event.preventDefault();
+  const form = event.target;
+  edit(() => send('PUT', 'api/lists', {
+    name: form.name.value.trim(),
+    proxies: list(form.proxies.value),
+  }).then(() => form.reset()));
+};
+
+$('save-domain').onsubmit = (event) => {
+  event.preventDefault();
+  const form = event.target;
+  const rule = {
+    pattern: form.pattern.value.trim(),
+    list: form.list.value,
+    max_parallel_proxies: number(form.max_parallel_proxies.value),
+    max_conns_per_proxy: number(form.max_conns_per_proxy.value),
+    ban_duration: form.ban_duration.value.trim(),
+  };
+  if (form.mitm.checked) rule.mitm = true;
+  edit(() => send('PUT', 'api/domains', rule).then(() => form.reset()));
+};
+
+$('save-defaults').onsubmit = (event) => {
+  event.preventDefault();
+  const form = event.target;
+  edit(() => send('PUT', 'api/defaults', {
+    list: form.list.value,
+    allow_direct: form.allow_direct.checked,
+    mitm: form.mitm.checked,
+    max_parallel_proxies: number(form.max_parallel_proxies.value),
+    max_conns_per_proxy: number(form.max_conns_per_proxy.value),
+    ban_duration: form.ban_duration.value.trim(),
+  }));
+};
+
+$('reload-config').onclick = () => edit(() => send('POST', 'api/config/reload'));

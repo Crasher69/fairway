@@ -107,3 +107,52 @@ func TestSaveLoadExample(t *testing.T) {
 		t.Errorf("отсутствие файла должно определяться как IsNotExist, получено %v", err)
 	}
 }
+
+// TestDefaultsAcceptUnlimited — «без ограничения» должно записываться
+// одинаково и в defaults, и в правиле домена.
+func TestDefaultsAcceptUnlimited(t *testing.T) {
+	raw := `{"defaults": {"max_conns_per_proxy": -1, "max_parallel_proxies": -1}}`
+	if _, err := Parse([]byte(raw)); err != nil {
+		t.Errorf("-1 в defaults должен приниматься: %v", err)
+	}
+	if _, err := Parse([]byte(`{"defaults": {"max_conns_per_proxy": -5}}`)); err == nil {
+		t.Error("лимит меньше -1 должен отвергаться")
+	}
+}
+
+// TestSaveOmitsInheritedZeros — ноль в правиле домена значит «взять из
+// defaults». Записывать его явным "0s" нельзя: человек прочтёт это как
+// «баны выключены» и будет неделю искать, почему прокси не банятся.
+func TestSaveOmitsInheritedZeros(t *testing.T) {
+	cfg := &Config{
+		Defaults: Defaults{BanDuration: Duration(2 * time.Minute)},
+		Proxies:  []Proxy{{Name: "p", URL: "http://1.1.1.1:80"}},
+		Lists:    []List{{Name: "l", Proxies: []string{"p"}}},
+		Domains:  []Domain{{Pattern: "a.com", List: "l"}},
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := cfg.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Смотрим только блок domains: в defaults явные нули уместны, это
+	// справочный блок, по которому человек и понимает, что вообще бывает.
+	text := string(raw)
+	domains := text[strings.Index(text, `"domains"`):]
+	for _, unwanted := range []string{`"ban_duration"`, `"max_conns_per_proxy"`, `"max_parallel_proxies"`} {
+		if strings.Contains(domains, unwanted) {
+			t.Errorf("в сохранённом правиле домена появился %s:\n%s", unwanted, domains)
+		}
+	}
+	// И при этом файл по-прежнему читается, а наследование работает.
+	back, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.Domains[0].BanDuration != 0 || back.Defaults.BanDuration.Duration() != 2*time.Minute {
+		t.Errorf("после round-trip: домен %v, defaults %v", back.Domains[0].BanDuration, back.Defaults.BanDuration)
+	}
+}

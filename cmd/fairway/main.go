@@ -107,21 +107,6 @@ func main() {
 	go ratings.Autosave(ctx, ratingsPath, *ratingSave,
 		func(err error) { logger.Printf("рейтинги не сохранены: %v", err) })
 
-	if len(upstreams) == 0 {
-		watcher := config.NewWatcher(*configPath, *pollInterval)
-		go watcher.Run(ctx,
-			func(updated *config.Config) {
-				if err := pool.Apply(updated); err != nil {
-					logger.Printf("конфиг не применён: %v", err)
-					return
-				}
-				logger.Print("конфиг перечитан")
-				describe(logger, updated, pool)
-			},
-			func(err error) { logger.Printf("конфиг не перечитан: %v", err) },
-		)
-	}
-
 	issuer := mitmca.NewIssuer(ca)
 	recorder := stats.New(*historySize)
 
@@ -139,16 +124,46 @@ func main() {
 		},
 	}
 
+	readConfig := func() *config.Config { return currentConfig.Load().(*config.Config) }
+	applyConfig := func(updated *config.Config) error {
+		if err := pool.Apply(updated); err != nil {
+			return err
+		}
+		currentConfig.Store(updated)
+		describe(logger, updated, pool)
+		return nil
+	}
+
 	adminSrv := &admin.Server{
 		Pool:     pool,
 		Ratings:  ratings,
 		Recorder: recorder,
 		Issuer:   issuer,
 		CA:       ca,
-		Config:   func() *config.Config { return currentConfig.Load().(*config.Config) },
+		Config:   readConfig,
 		Token:    adminToken(logger, *adminTokenFlag),
 		Version:  version,
 		Started:  time.Now(),
+	}
+	// Правка из панели и слежение за файлом имеют смысл только когда конфиг
+	// живёт в файле: при -upstream он собран из флагов и сохранять его некуда.
+	if len(upstreams) == 0 {
+		adminSrv.Editor = &admin.Editor{
+			Path:    *configPath,
+			Current: readConfig,
+			Apply:   applyConfig,
+		}
+		watcher := config.NewWatcher(*configPath, *pollInterval)
+		go watcher.Run(ctx,
+			func(updated *config.Config) {
+				if err := applyConfig(updated); err != nil {
+					logger.Printf("конфиг не применён: %v", err)
+					return
+				}
+				logger.Print("конфиг перечитан")
+			},
+			func(err error) { logger.Printf("конфиг не перечитан: %v", err) },
+		)
 	}
 	startAdmin(ctx, logger, *adminAddr, adminSrv)
 

@@ -18,12 +18,18 @@
       <div><span class="muted">доменов</span> <b id="domains">—</b></div>
       <div><span class="muted">аптайм</span> <b id="uptime">—</b></div>
       <div><span class="muted">сертификатов в кэше</span> <b id="certs">—</b></div>
+      <div><span class="muted">горутин</span> <b id="goroutines">—</b></div>
+      <div><span class="muted">куча</span> <b id="heap">—</b></div>
       <a id="ca-link" href="ca" download>Скачать корневой сертификат</a>
     </div>
     <div class="ca muted" id="ca-info"></div>
+    <nav class="tabs">
+      <button class="tab active" data-view="monitor">Мониторинг</button>
+      <button class="tab" data-view="config">Настройки</button>
+    </nav>
   </header>
 
-  <main>
+  <main id="view-monitor">
     <aside>
       <h2>Домены</h2>
       <p class="hint" id="domains-hint">Трафика ещё не было — домены появятся,
@@ -78,6 +84,74 @@
       </div>
     </section>
   </main>
+
+  <div id="view-config" class="config" hidden>
+    <div class="config-head">
+      <p class="hint">Правки сохраняются в <code id="config-note">config.json</code>
+        и применяются сразу, без перезапуска.</p>
+      <button id="reload-config">Перечитать файл</button>
+    </div>
+    <div id="config-error" class="error" hidden></div>
+    <div id="config-readonly" class="hint" hidden>
+      Конфиг задан флагами <code>-upstream</code>, сохранять его некуда —
+      панель работает только на чтение.
+    </div>
+
+    <h2>Прокси</h2>
+    <table id="cfg-proxies">
+      <thead><tr><th>Имя</th><th>Адрес</th><th>Метки</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <form id="add-proxy" class="row">
+      <input name="name" placeholder="имя" required>
+      <input name="url" placeholder="socks5://user:pass@host:1080" size="42" required>
+      <input name="tags" placeholder="метки через запятую">
+      <button>Добавить прокси</button>
+    </form>
+
+    <h2>Листы</h2>
+    <table id="cfg-lists">
+      <thead><tr><th>Лист</th><th>Прокси</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <form id="save-list" class="row">
+      <input name="name" placeholder="имя листа" required>
+      <input name="proxies" placeholder="прокси через запятую" size="42" required>
+      <button>Сохранить лист</button>
+    </form>
+
+    <h2>Правила доменов</h2>
+    <table id="cfg-domains">
+      <thead>
+        <tr>
+          <th>Паттерн</th><th>Лист</th><th>MITM</th>
+          <th class="num">Прокси разом</th><th class="num">Соединений</th>
+          <th>Бан</th><th></th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <form id="save-domain" class="row">
+      <input name="pattern" placeholder="example.com или *.example.com" required>
+      <select name="list" id="domain-list-select"></select>
+      <label><input type="checkbox" name="mitm"> расшифровывать</label>
+      <input name="max_parallel_proxies" type="number" placeholder="прокси разом" min="-1" size="4">
+      <input name="max_conns_per_proxy" type="number" placeholder="соединений" min="-1" size="4">
+      <input name="ban_duration" placeholder="5m">
+      <button>Сохранить правило</button>
+    </form>
+
+    <h2>По умолчанию</h2>
+    <form id="save-defaults" class="row">
+      <label>лист <select name="list" id="defaults-list-select"></select></label>
+      <label><input type="checkbox" name="allow_direct"> разрешить напрямую</label>
+      <label><input type="checkbox" name="mitm"> расшифровывать</label>
+      <input name="max_parallel_proxies" type="number" placeholder="прокси разом" min="-1">
+      <input name="max_conns_per_proxy" type="number" placeholder="соединений" min="-1">
+      <input name="ban_duration" placeholder="5m">
+      <button>Сохранить</button>
+    </form>
+  </div>
 
   <script src="app.js"></script>
 </body>
