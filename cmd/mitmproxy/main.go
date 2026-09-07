@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"mitm/internal/config"
 	"mitm/internal/forward"
 	"mitm/internal/proxypool"
+	"mitm/internal/rating"
 )
 
 var version = "dev"
@@ -39,6 +41,7 @@ func main() {
 		dataDir      = flag.String("data", "./data", "каталог для CA и снапшотов рейтингов")
 		dialTimeout  = flag.Duration("dial-timeout", 15*time.Second, "таймаут подключения к цели через апстрим")
 		pollInterval = flag.Duration("config-poll", config.DefaultPollInterval, "как часто перечитывать конфиг")
+		ratingSave   = flag.Duration("ratings-save", 30*time.Second, "как часто сохранять рейтинги на диск")
 	)
 	flag.Var(&upstreams, "upstream", "апстрим scheme://user:pass@host:port в обход конфига; можно повторять")
 	flag.Parse()
@@ -57,6 +60,25 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	ratings := rating.NewRegistry()
+	ratings.BanDuration = func(domain string) time.Duration {
+		if rule, ok := pool.Rule(domain); ok {
+			return rule.BanDuration
+		}
+		return 0
+	}
+	ratings.OnBan = func(domain, proxy, reason string, until time.Time) {
+		logger.Printf("бан: %s для %s (%s) до %s", proxy, domain, reason, until.Format("15:04:05"))
+	}
+	pool.Select = ratings.Select
+
+	ratingsPath := filepath.Join(*dataDir, "ratings.json")
+	if err := ratings.Load(ratingsPath); err != nil {
+		logger.Printf("рейтинги не загружены: %v", err)
+	}
+	go ratings.Autosave(ctx, ratingsPath, *ratingSave,
+		func(err error) { logger.Printf("рейтинги не сохранены: %v", err) })
 
 	if len(upstreams) == 0 {
 		watcher := config.NewWatcher(*configPath, *pollInterval)
@@ -77,7 +99,10 @@ func main() {
 		Pick:        router(pool),
 		DialTimeout: *dialTimeout,
 		Logger:      logger,
-		Observe:     observer(logger),
+		Observe: func(s forward.Sample) {
+			ratings.Observe(s)
+			logSample(logger, s)
+		},
 	}
 
 	logger.Printf("mitmproxy %s: прокси на %s, конфиг %s, данные в %s (админка на %s появится на этапе 5)",
@@ -117,16 +142,14 @@ func router(pool *proxypool.Pool) func(string) (*forward.Route, error) {
 	}
 }
 
-func observer(logger *log.Logger) func(forward.Sample) {
-	return func(s forward.Sample) {
-		if s.Err != nil {
-			logger.Printf("%s через %s: ОШИБКА %v (connect %s)", s.Domain, s.Upstream, s.Err, round(s.Connect))
-			return
-		}
-		logger.Printf("%s через %s: статус %d, connect %s, ttfb %s, %d Б, %.0f Б/с, всего %s",
-			s.Domain, s.Upstream, s.Status, round(s.Connect), round(s.TTFB),
-			s.Bytes, s.Throughput(), round(s.Duration))
+func logSample(logger *log.Logger, s forward.Sample) {
+	if s.Err != nil {
+		logger.Printf("%s через %s: ОШИБКА %v (connect %s)", s.Domain, s.Upstream, s.Err, round(s.Connect))
+		return
 	}
+	logger.Printf("%s через %s: статус %d, connect %s, ttfb %s, %d Б, %.0f Б/с, всего %s",
+		s.Domain, s.Upstream, s.Status, round(s.Connect), round(s.TTFB),
+		s.Bytes, s.Throughput(), round(s.Duration))
 }
 
 // loadConfig берёт конфиг с диска, а при флагах -upstream собирает временный

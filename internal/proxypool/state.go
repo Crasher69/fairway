@@ -46,13 +46,17 @@ func (s *domainState) pick(members []*Proxy, rule Rule, sel Selector) *Proxy {
 		return nil
 	}
 
+	// Отказ стратегии — это осмысленный ответ («все забанены»), а не сбой,
+	// поэтому подменять его round-robin нельзя: бан перестал бы работать.
 	var chosen *Proxy
 	if sel != nil {
 		chosen = sel(s.domain, candidates)
-	}
-	if chosen == nil {
+	} else {
 		chosen = candidates[int(s.rr%uint64(len(candidates)))]
 		s.rr++
+	}
+	if chosen == nil {
+		return nil
 	}
 
 	s.active[chosen.Name]++
