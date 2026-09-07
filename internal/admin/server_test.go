@@ -402,3 +402,45 @@ func TestOverviewHasRuntime(t *testing.T) {
 		t.Errorf("рантайм не заполнен: горутин %d, куча %v МБ", got.Goroutines, got.HeapMB)
 	}
 }
+
+func TestCAInfoExposesFingerprintAndTrust(t *testing.T) {
+	_, ts := newTestServer(t, "")
+
+	var got caResponse
+	getJSON(t, ts.URL, "/api/ca", &got)
+
+	if !strings.Contains(got.Subject, "Fairway") {
+		t.Errorf("subject = %q", got.Subject)
+	}
+	// Отпечаток SHA-256 в hex — 64 символа в верхнем регистре: его сверяют
+	// глазами с тем, что показывает системное хранилище.
+	if len(got.Fingerprint) != 64 || got.Fingerprint != strings.ToUpper(got.Fingerprint) {
+		t.Errorf("отпечаток = %q", got.Fingerprint)
+	}
+	if got.Trust.Store == "" {
+		t.Error("не указано, в какое хранилище ставится сертификат")
+	}
+	// Свежесозданный CA в системе стоять не может.
+	if got.Trust.Installed {
+		t.Error("только что созданный сертификат числится установленным")
+	}
+}
+
+func TestCAActionsRequireToken(t *testing.T) {
+	_, ts := newTestServer(t, "секрет")
+	for _, path := range []string{"/api/ca", "/api/ca/install", "/api/ca/uninstall"} {
+		method := "GET"
+		if strings.Contains(path, "install") {
+			method = "POST"
+		}
+		req, _ := http.NewRequest(method, ts.URL+path, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("%s %s без токена вернул %d", method, path, resp.StatusCode)
+		}
+	}
+}

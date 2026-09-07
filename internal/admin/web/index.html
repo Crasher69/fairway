@@ -28,6 +28,7 @@
       <button class="tab" data-view="proxies">Прокси</button>
       <button class="tab" data-view="lists">Листы</button>
       <button class="tab" data-view="rules">Домены</button>
+      <button class="tab" data-view="cert">Сертификат</button>
     </nav>
   </header>
 
@@ -87,139 +88,255 @@
     </section>
   </main>
 
-  <div id="config-error" class="error settings" hidden></div>
-  <div id="config-readonly" class="hint settings" hidden>
+  <div id="config-error" class="error" hidden></div>
+  <div id="config-readonly" class="notice" hidden>
     Конфиг задан флагами <code>-upstream</code>, сохранять его некуда —
     панель работает только на чтение.
   </div>
 
   <!-- Прокси -->
   <div id="view-proxies" class="settings" hidden>
-    <div class="config-head">
+    <div class="page-head">
       <h1>Прокси</h1>
-      <span class="hint">Файл: <code class="config-note">config.json</code></span>
-      <button class="reload-config">Перечитать файл</button>
+      <span class="spacer"></span>
+      <button class="ghost reload-config">Перечитать файл</button>
+    </div>
+    <p class="page-lead">Апстримы, через которые уходит трафик. Сами по себе они
+      никуда не назначаются — сначала собираются в лист, а лист уже привязывается
+      к домену. Файл: <code class="config-note">config.json</code></p>
+
+    <div class="card">
+      <h2>Заведённые прокси</h2>
+      <table id="cfg-proxies">
+        <thead>
+          <tr>
+            <th>Имя</th><th>Схема</th><th>Адрес</th><th class="num">Порт</th>
+            <th>Логин</th><th>Страна</th><th>Комментарий</th><th></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
     </div>
 
-    <table id="cfg-proxies">
-      <thead>
-        <tr>
-          <th>Имя</th><th>Схема</th><th>Адрес</th><th class="num">Порт</th>
-          <th>Логин</th><th>Страна</th><th>Комментарий</th><th></th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-
-    <h2 id="proxy-form-title">Добавить прокси</h2>
-    <form id="proxy-form">
-      <div class="row">
-        <label>имя <input name="name" placeholder="p1" required></label>
-        <label>схема
-          <select name="scheme">
-            <option value="http">http</option>
-            <option value="https">https</option>
-            <option value="socks5">socks5</option>
-          </select>
-        </label>
-        <label>IP или хост <input name="host" placeholder="1.2.3.4" required></label>
-        <label>порт <input name="port" type="number" min="1" max="65535" placeholder="1080" required></label>
-      </div>
-      <div class="row">
-        <label>логин <input name="login" placeholder="необязательно"></label>
-        <label>пароль <input name="password" type="password" placeholder="необязательно"></label>
-        <label>страна <input name="country" placeholder="RU" size="6"></label>
-        <label>комментарий <input name="comment" placeholder="для чего этот прокси" size="30"></label>
-      </div>
-      <div class="row">
-        <button>Сохранить</button>
-        <button type="button" id="proxy-form-cancel" hidden>Отмена</button>
-        <span class="hint">Строку вида <code>socks5://user:pass@1.2.3.4:1080</code>
-          можно вставить в поле «IP или хост» — она разложится по полям.</span>
-      </div>
-    </form>
+    <div class="card">
+      <h2 id="proxy-form-title">Добавить прокси</h2>
+      <form id="proxy-form">
+        <div class="fields">
+          <label class="field">имя
+            <input name="name" placeholder="p1" required>
+          </label>
+          <label class="field">схема
+            <select name="scheme">
+              <option value="http">http</option>
+              <option value="https">https</option>
+              <option value="socks5">socks5</option>
+            </select>
+          </label>
+          <label class="field field-wide">IP или хост
+            <input name="host" placeholder="1.2.3.4" required>
+          </label>
+          <label class="field">порт
+            <input name="port" type="number" min="1" max="65535" placeholder="1080">
+          </label>
+        </div>
+        <div class="fields">
+          <label class="field">логин
+            <input name="login" placeholder="если нужен">
+          </label>
+          <label class="field">пароль
+            <input name="password" type="password" placeholder="если нужен">
+          </label>
+          <label class="field">страна
+            <input name="country" placeholder="RU" size="5">
+          </label>
+          <label class="field field-wide">комментарий
+            <input name="comment" placeholder="например: куплен до декабря">
+          </label>
+        </div>
+        <div class="form-actions">
+          <button>Сохранить</button>
+          <button type="button" class="ghost" id="proxy-form-cancel" hidden>Отмена</button>
+          <span class="hint">Строку целиком — <code>socks5://user:pass@1.2.3.4:1080</code> —
+            можно вставить в поле «IP или хост», она разложится по полям.</span>
+        </div>
+      </form>
+    </div>
   </div>
 
   <!-- Листы -->
   <div id="view-lists" class="settings" hidden>
-    <div class="config-head">
+    <div class="page-head">
       <h1>Листы</h1>
-      <span class="hint">Лист — набор прокси, который назначается домену.</span>
-      <button class="reload-config">Перечитать файл</button>
+      <span class="spacer"></span>
+      <button class="ghost reload-config">Перечитать файл</button>
+    </div>
+    <p class="page-lead">Лист — набор прокси, который назначается домену.
+      Внутри листа Fairway сам выбирает, через какой прокси идти, и перестраивает
+      выбор по замерам.</p>
+
+    <div class="card">
+      <h2>Листы</h2>
+      <table id="cfg-lists">
+        <thead><tr><th>Лист</th><th>Прокси</th><th class="num">Штук</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
     </div>
 
-    <table id="cfg-lists">
-      <thead><tr><th>Лист</th><th>Прокси</th><th class="num">Штук</th><th></th></tr></thead>
-      <tbody></tbody>
-    </table>
+    <div class="card">
+      <h2 id="list-form-title">Создать лист</h2>
+      <form id="list-form">
+        <div class="fields">
+          <label class="field field-wide">имя листа
+            <input name="name" placeholder="residential" required>
+          </label>
+        </div>
 
-    <h2 id="list-form-title">Создать лист</h2>
-    <form id="list-form">
-      <div class="row">
-        <label>имя <input name="name" placeholder="residential" required></label>
-      </div>
-      <p class="hint">Отметьте прокси, которые в него входят:</p>
-      <div id="list-members" class="checks"></div>
-      <div class="row">
-        <button>Сохранить лист</button>
-        <button type="button" id="list-form-cancel" hidden>Отмена</button>
-      </div>
-    </form>
+        <div class="members-head">
+          <span>Прокси в листе</span>
+          <span class="count" id="members-count"></span>
+          <span class="spacer"></span>
+          <button type="button" class="ghost" id="members-all">Выбрать все</button>
+          <button type="button" class="ghost" id="members-none">Снять все</button>
+        </div>
+        <div id="list-members" class="members"></div>
+
+        <div class="form-actions">
+          <button>Сохранить лист</button>
+          <button type="button" class="ghost" id="list-form-cancel" hidden>Отмена</button>
+        </div>
+      </form>
+    </div>
   </div>
 
   <!-- Домены -->
   <div id="view-rules" class="settings" hidden>
-    <div class="config-head">
-      <h1>Правила доменов</h1>
-      <span class="hint">Подбор: точное имя → самый длинный <code>*.суффикс</code> → <code>*</code> → по умолчанию.</span>
-      <button class="reload-config">Перечитать файл</button>
+    <div class="page-head">
+      <h1>Домены</h1>
+      <span class="spacer"></span>
+      <button class="ghost reload-config">Перечитать файл</button>
+    </div>
+    <p class="page-lead">Правило говорит, каким листом обслуживать домен.
+      Подбор идёт от частного к общему: точное имя → самый длинный
+      <code>*.суффикс</code> → <code>*</code> → общие настройки.</p>
+
+    <div class="card">
+      <h2>Правила</h2>
+      <table id="cfg-domains">
+        <thead>
+          <tr>
+            <th>Паттерн</th><th>Лист</th><th>MITM</th>
+            <th class="num">Прокси разом</th><th class="num">Соединений</th>
+            <th>Бан</th><th></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
     </div>
 
-    <table id="cfg-domains">
-      <thead>
-        <tr>
-          <th>Паттерн</th><th>Лист</th><th>MITM</th>
-          <th class="num">Прокси разом</th><th class="num">Соединений</th>
-          <th>Бан</th><th></th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
+    <div class="card">
+      <h2 id="rule-form-title">Добавить правило</h2>
+      <form id="rule-form">
+        <div class="fields">
+          <label class="field field-wide">паттерн
+            <input name="pattern" placeholder="example.com или *.example.com" required>
+          </label>
+          <label class="field">лист
+            <select name="list" id="rule-list-select" required></select>
+          </label>
+          <label class="toggle"><input type="checkbox" name="mitm"> расшифровывать TLS</label>
+        </div>
+        <div class="fields">
+          <label class="field">прокси разом
+            <input name="max_parallel_proxies" type="number" min="-1" placeholder="0 — как в общих">
+          </label>
+          <label class="field">соединений на прокси
+            <input name="max_conns_per_proxy" type="number" min="-1" placeholder="0 — как в общих">
+          </label>
+          <label class="field">бан
+            <input name="ban_duration" placeholder="5m" size="8">
+          </label>
+        </div>
+        <div class="form-actions">
+          <button>Сохранить правило</button>
+          <button type="button" class="ghost" id="rule-form-cancel" hidden>Отмена</button>
+          <span class="hint">Ноль в лимитах означает «взять из общих настроек»,
+            −1 — «без ограничения».</span>
+        </div>
+      </form>
+    </div>
 
-    <h2 id="rule-form-title">Добавить правило</h2>
-    <form id="rule-form">
-      <div class="row">
-        <label>паттерн <input name="pattern" placeholder="example.com или *.example.com" size="28" required></label>
-        <label>лист <select name="list" id="rule-list-select" required></select></label>
-        <label><input type="checkbox" name="mitm"> расшифровывать TLS</label>
-      </div>
-      <div class="row">
-        <label>прокси разом <input name="max_parallel_proxies" type="number" min="-1" placeholder="0 — как в общих"></label>
-        <label>соединений на прокси <input name="max_conns_per_proxy" type="number" min="-1" placeholder="0 — как в общих"></label>
-        <label>бан <input name="ban_duration" placeholder="5m" size="8"></label>
-      </div>
-      <div class="row">
-        <button>Сохранить правило</button>
-        <button type="button" id="rule-form-cancel" hidden>Отмена</button>
-      </div>
-    </form>
+    <div class="card">
+      <h2>Общие настройки</h2>
+      <form id="defaults-form">
+        <div class="fields">
+          <label class="field">лист по умолчанию
+            <select name="list" id="defaults-list-select"></select>
+          </label>
+          <label class="toggle"><input type="checkbox" name="allow_direct"> разрешить напрямую</label>
+          <label class="toggle"><input type="checkbox" name="mitm"> расшифровывать TLS</label>
+        </div>
+        <div class="fields">
+          <label class="field">прокси разом
+            <input name="max_parallel_proxies" type="number" min="-1">
+          </label>
+          <label class="field">соединений на прокси
+            <input name="max_conns_per_proxy" type="number" min="-1">
+          </label>
+          <label class="field">бан
+            <input name="ban_duration" placeholder="5m" size="8">
+          </label>
+        </div>
+        <div class="form-actions">
+          <button>Сохранить</button>
+          <span class="hint">Без «разрешить напрямую» домен без правила получит 503 —
+            и это правильнее, чем молча уйти с вашего реального IP.</span>
+        </div>
+      </form>
+    </div>
+  </div>
 
-    <h2>Общие настройки</h2>
-    <form id="defaults-form">
-      <div class="row">
-        <label>лист по умолчанию <select name="list" id="defaults-list-select"></select></label>
-        <label><input type="checkbox" name="allow_direct"> разрешить напрямую</label>
-        <label><input type="checkbox" name="mitm"> расшифровывать TLS</label>
+  <!-- Сертификат -->
+  <div id="view-cert" class="settings" hidden>
+    <div class="page-head">
+      <h1>Корневой сертификат</h1>
+      <span class="spacer"></span>
+      <a class="button-link" href="ca" download>Скачать .crt</a>
+    </div>
+    <p class="page-lead">Нужен только для режима MITM: чтобы браузер не ругался
+      на подменённый сертификат сайта, машина должна доверять нашему корню.
+      Он создаётся при первом запуске и у каждой установки свой — в бинарник
+      не зашит, иначе приватный ключ был бы общим для всех.</p>
+
+    <div class="card">
+      <h2>Этот сертификат</h2>
+      <dl class="facts-list">
+        <dt>Кому выдан</dt><dd id="cert-subject">—</dd>
+        <dt>Действует до</dt><dd id="cert-until">—</dd>
+        <dt>Отпечаток SHA-256</dt><dd class="mono" id="cert-fingerprint">—</dd>
+        <dt>Хранилище</dt><dd id="cert-store">—</dd>
+        <dt>Состояние</dt><dd id="cert-state">—</dd>
+      </dl>
+    </div>
+
+    <div class="card">
+      <h2>Установка на эту машину</h2>
+      <p class="hint" id="cert-hint">Ставится в хранилище текущего пользователя,
+        права администратора не нужны.</p>
+      <div class="form-actions">
+        <button id="cert-install">Установить в систему</button>
+        <button class="ghost danger" id="cert-uninstall">Удалить из системы</button>
       </div>
-      <div class="row">
-        <label>прокси разом <input name="max_parallel_proxies" type="number" min="-1"></label>
-        <label>соединений на прокси <input name="max_conns_per_proxy" type="number" min="-1"></label>
-        <label>бан <input name="ban_duration" placeholder="5m" size="8"></label>
-        <button>Сохранить</button>
-      </div>
-      <p class="hint">Без «разрешить напрямую» домен без правила получит 503 —
-        и это правильнее, чем молча уйти с вашего реального IP.</p>
-    </form>
+      <p class="hint">После установки машина будет доверять любому сертификату,
+        подписанному этим ключом. Когда fairway больше не нужен — удалите
+        сертификат этой же кнопкой.</p>
+    </div>
+
+    <div class="card">
+      <h2>Остальные машины сети</h2>
+      <p class="hint">Скачайте .crt и импортируйте в «Доверенные корневые центры
+        сертификации». В домене это раскатывается групповой политикой.
+        Firefox, Java и Python держат своё хранилище — туда добавлять отдельно.</p>
+    </div>
   </div>
 
   <script src="app.js"></script>

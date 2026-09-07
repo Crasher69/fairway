@@ -58,6 +58,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/domains", s.saveDomain)
 	mux.HandleFunc("DELETE /api/domains/{pattern}", s.deleteDomain)
 	mux.HandleFunc("PUT /api/defaults", s.saveDefaults)
+	mux.HandleFunc("GET /api/ca", s.caInfo)
+	mux.HandleFunc("POST /api/ca/install", s.caInstall)
+	mux.HandleFunc("POST /api/ca/uninstall", s.caUninstall)
 	mux.HandleFunc("GET /ca", s.downloadCA)
 	mux.Handle("GET /", staticHandler())
 

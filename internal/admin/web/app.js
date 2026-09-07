@@ -357,7 +357,7 @@ window.addEventListener('resize', renderChart);
 
 // --- вкладки ---
 
-const views = ['monitor', 'proxies', 'lists', 'rules'];
+const views = ['monitor', 'proxies', 'lists', 'rules', 'cert'];
 
 document.querySelectorAll('.tab').forEach((tab) => {
   tab.onclick = () => {
@@ -367,7 +367,8 @@ document.querySelectorAll('.tab').forEach((tab) => {
     for (const view of views) {
       if (view !== 'monitor') $('view-' + view).hidden = view !== active;
     }
-    if (active !== 'monitor') refreshSettings().catch(showConfigError);
+    if (active === 'cert') refreshCert().catch(showConfigError);
+    else if (active !== 'monitor') refreshSettings().catch(showConfigError);
   };
 });
 
@@ -566,34 +567,86 @@ function renderListTable() {
   }));
 }
 
-// renderListMembers рисует галочки по всем известным прокси: набирать имена
-// руками — верный способ ошибиться и получить отказ валидации.
+// renderListMembers рисует прокси столбиком с галочками: набирать имена
+// руками — верный способ ошибиться в букве и получить отказ валидации,
+// а плитка из имён не даёт разглядеть, что за прокси и откуда он.
 function renderListMembers(selected) {
   const chosen = new Set(selected || []);
   const box = $('list-members');
   if (!settings.proxies.length) {
-    box.replaceChildren(document.createTextNode('Сначала добавьте хотя бы один прокси.'));
+    const note = document.createElement('div');
+    note.className = 'empty-note';
+    note.textContent = 'Прокси ещё не заведены — добавьте их на вкладке «Прокси».';
+    box.replaceChildren(note);
+    updateMembersCount();
     return;
   }
+
   box.replaceChildren(...settings.proxies.map((p) => {
-    const label = document.createElement('label');
+    const row = document.createElement('label');
+    row.className = 'member';
+
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.value = p.name;
     input.checked = chosen.has(p.name);
-    const title = document.createElement('span');
-    title.textContent = p.name;
+    input.onchange = () => {
+      row.classList.toggle('checked', input.checked);
+      updateMembersCount();
+    };
+
+    const name = document.createElement('span');
+    name.className = 'member-name';
+    name.textContent = p.name;
+
     const where = document.createElement('span');
-    where.className = 'muted';
-    where.textContent = [p.country, p.host].filter(Boolean).join(' · ');
-    label.append(input, title, where);
-    return label;
+    where.className = 'member-where';
+    where.textContent = p.port ? `${p.host}:${p.port}` : (p.host || '');
+
+    row.append(input, name);
+    if (p.country) {
+      const flag = document.createElement('span');
+      flag.className = 'flag';
+      flag.textContent = p.country;
+      row.append(flag);
+    }
+    row.append(where);
+    if (p.comment) {
+      const note = document.createElement('span');
+      note.className = 'member-note';
+      note.textContent = p.comment;
+      row.append(note);
+    }
+    row.classList.toggle('checked', input.checked);
+    return row;
   }));
+  updateMembersCount();
+}
+
+function memberInputs() {
+  return [...$('list-members').querySelectorAll('input[type="checkbox"]')];
 }
 
 function selectedMembers() {
-  return [...$('list-members').querySelectorAll('input:checked')].map((input) => input.value);
+  return memberInputs().filter((input) => input.checked).map((input) => input.value);
 }
+
+function updateMembersCount() {
+  const all = memberInputs();
+  const picked = all.filter((input) => input.checked).length;
+  $('members-count').textContent = all.length ? `выбрано ${picked} из ${all.length}` : '';
+}
+
+function setAllMembers(checked) {
+  for (const input of memberInputs()) {
+    input.checked = checked;
+    input.closest('.member').classList.toggle('checked', checked);
+  }
+  updateMembersCount();
+}
+
+$('members-all').onclick = () => setAllMembers(true);
+$('members-none').onclick = () => setAllMembers(false);
 
 function startListEdit(list) {
   editing.list = list.name;
@@ -749,3 +802,38 @@ $('defaults-form').onsubmit = (event) => {
 document.querySelectorAll('.reload-config').forEach((btn) => {
   btn.onclick = () => edit(() => send('POST', 'api/config/reload'));
 });
+
+// --- корневой сертификат ---
+
+async function refreshCert() {
+  const data = await api('api/ca');
+  $('cert-subject').textContent = data.subject;
+  $('cert-until').textContent = new Date(data.not_after).toLocaleDateString('ru-RU');
+  // Отпечаток разбиваем по два символа: так его сверяют глазами с тем,
+  // что показывает системное хранилище.
+  $('cert-fingerprint').textContent = (data.fingerprint.match(/../g) || []).join(':');
+  $('cert-store').textContent = data.trust.store;
+
+  const state = $('cert-state');
+  state.replaceChildren();
+  const badge = document.createElement('span');
+  badge.className = 'badge ' + (data.trust.installed ? 'ok' : 'idle');
+  badge.textContent = data.trust.installed ? 'установлен' : 'не установлен';
+  state.append(badge);
+
+  // На Linux ставить нечем: там всё зависит от дистрибутива и требует root.
+  $('cert-install').disabled = !data.trust.supported || data.trust.installed;
+  $('cert-uninstall').disabled = !data.trust.supported || !data.trust.installed;
+  if (data.trust.hint) $('cert-hint').textContent = data.trust.hint;
+}
+
+function certAction(path) {
+  $('config-error').hidden = true;
+  send('POST', path).then(refreshCert).catch(showConfigError);
+}
+
+$('cert-install').onclick = () => certAction('api/ca/install');
+$('cert-uninstall').onclick = () => {
+  if (!confirm('Удалить корневой сертификат Fairway из доверенных на этой машине?')) return;
+  certAction('api/ca/uninstall');
+};

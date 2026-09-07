@@ -148,129 +148,253 @@ td.name { font-family: var(--mono); }
 }
 
 
+
 /* --- вкладки --- */
 
-.tabs { flex-basis: 100%; display: flex; gap: 8px; margin-top: 4px; }
+.tabs { flex-basis: 100%; display: flex; gap: 6px; margin-top: 6px; }
 
 .tab {
   background: none;
-  border: 1px solid var(--line);
+  border: 1px solid transparent;
   color: var(--muted);
-  padding: 5px 14px;
-  border-radius: 6px;
+  padding: 6px 14px;
+  border-radius: 7px;
   cursor: pointer;
   font: inherit;
   font-size: 13px;
+  transition: background .12s, color .12s;
 }
 
-.tab:hover { color: var(--text); }
+.tab:hover { color: var(--text); background: #232833; }
 .tab.active { background: #263248; color: var(--text); border-color: #35507a; }
 
 /* --- страницы настроек --- */
 
-.settings { padding: 20px; max-width: 1150px; }
-.settings h1 { margin: 0; }
-.settings h2 { margin-top: 28px; }
-.settings code { font-family: var(--mono); font-size: 12px; }
+.settings { padding: 24px 20px 60px; max-width: 1000px; }
 
-.config-head {
+.page-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 16px;
-  flex-wrap: wrap;
-  margin-bottom: 16px;
+  margin-bottom: 6px;
 }
 
-.config-head .hint { margin: 0; }
+.page-head h1 { margin: 0; font-size: 22px; font-family: inherit; }
+.page-head .spacer { flex: 1; }
+.page-lead { color: var(--muted); font-size: 13px; margin: 0 0 18px; max-width: 70ch; }
+.settings code { font-family: var(--mono); font-size: 12px; color: var(--text); }
 
-form .row {
+/* Карточка — единица чтения на странице: таблица и форма не сливаются
+   в сплошную простыню. */
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 18px 20px;
+  margin-bottom: 18px;
+}
+
+.card > h2 {
+  margin: 0 0 14px;
+  font-size: 12px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Внутри карточки таблица без своей рамки: рамка уже у карточки. */
+.card table {
+  background: none;
+  border: none;
+  border-radius: 0;
+  margin: -4px 0 0;
+}
+
+.card table th { padding-top: 0; }
+.card table tr:last-child td { border-bottom: none; }
+
+/* --- формы --- */
+
+.fields {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px 14px;
+  gap: 14px 16px;
   align-items: flex-end;
-  margin-top: 10px;
 }
 
 /* Подпись над полем, а не сбоку: иначе форма из восьми полей расползается
    в нечитаемую строку. */
-form label {
+.field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
   color: var(--muted);
   font-size: 12px;
 }
 
-form label input[type="checkbox"] { margin-right: 6px; }
+.field input, .field select { min-width: 0; }
+.field-wide { flex: 1 1 260px; }
 
-/* Чекбокс с подписью — наоборот, в строку. */
-form .row > label:has(input[type="checkbox"]) {
-  flex-direction: row;
+.toggle {
+  display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  color: var(--text);
   font-size: 13px;
-  padding-bottom: 6px;
+  padding-bottom: 7px;
+  cursor: pointer;
 }
 
-input, select, button {
-  background: var(--panel);
+.form-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.form-actions .hint { margin: 0; }
+
+input, select, button, textarea {
+  background: #14171c;
   border: 1px solid var(--line);
   color: var(--text);
-  border-radius: 6px;
-  padding: 6px 10px;
+  border-radius: 7px;
+  padding: 7px 10px;
   font: inherit;
   font-size: 13px;
 }
 
-input[type="number"] { width: 170px; }
-input[type="checkbox"] { width: auto; padding: 0; }
-input:read-only { color: var(--muted); background: #191d24; }
-input:focus, select:focus { outline: none; border-color: #35507a; }
+input::placeholder { color: #5c6472; }
+input[type="number"] { width: 100%; }
+input[type="checkbox"] { width: auto; padding: 0; accent-color: var(--accent); cursor: pointer; }
+input:read-only { color: var(--muted); background: #191d24; cursor: not-allowed; }
+input:focus, select:focus { outline: none; border-color: #3f6091; }
 
 button {
   cursor: pointer;
   border-color: #35507a;
   background: #263248;
+  padding: 7px 16px;
 }
 
 button:hover { background: #2d3d59; }
+button.ghost { background: none; border-color: var(--line); color: var(--muted); }
+button.ghost:hover { background: #232833; color: var(--text); }
 button.danger { border-color: #5a2b2d; background: #3a2224; color: #ffb3b5; }
 button.danger:hover { background: #4a2a2c; }
 
-td.actions { white-space: nowrap; text-align: right; }
-td.actions button { padding: 3px 10px; font-size: 12px; margin-left: 6px; }
+td.actions { white-space: nowrap; text-align: right; width: 1%; }
+td.actions button { padding: 4px 12px; font-size: 12px; margin-left: 6px; }
 
-/* Прокси в листе — сеткой: полсотни имён в строку не читаются. */
-.checks {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 6px 14px;
-  margin: 8px 0 4px;
-  padding: 12px;
-  background: var(--panel);
+/* --- выбор прокси в лист --- */
+
+.members-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 4px 0 8px;
+}
+
+.members-head .count { color: var(--muted); font-size: 12px; }
+.members-head .spacer { flex: 1; }
+.members-head button { padding: 3px 10px; font-size: 12px; }
+
+/* Столбиком, а не сеткой: строку с адресом и комментарием глазами читать
+   удобнее, чем плитку из имён. */
+.members {
   border: 1px solid var(--line);
   border-radius: 8px;
+  overflow: hidden;
+  max-height: 340px;
+  overflow-y: auto;
 }
 
-.checks label {
-  flex-direction: row;
-  align-items: baseline;
-  gap: 8px;
-  color: var(--text);
-  font-size: 13px;
+.members .member {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  transition: background .1s;
 }
 
-.checks label .muted { font-size: 11px; }
+.members .member:last-child { border-bottom: none; }
+.members .member:hover { background: #232833; }
+.members .member.checked { background: rgba(77,163,255,.08); }
+.members .member-name { font-family: var(--mono); font-size: 13px; min-width: 120px; }
+.members .member-where { color: var(--muted); font-size: 12px; font-family: var(--mono); }
+.members .member-note { color: var(--muted); font-size: 12px; margin-left: auto; text-align: right; }
+.members .empty-note { padding: 14px; color: var(--muted); font-size: 13px; }
+
+.flag {
+  background: #232833;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: .04em;
+}
+
+/* --- служебное --- */
 
 .error {
   background: rgba(229,72,77,.12);
   border: 1px solid rgba(229,72,77,.4);
   color: #ffb3b5;
-  border-radius: 6px;
-  padding: 10px 12px;
-  margin: 0 20px 12px;
+  border-radius: 8px;
+  padding: 11px 14px;
+  margin: 0 20px 14px;
   white-space: pre-wrap;
   font-size: 13px;
 }
 
-.hint.settings { margin: 0 20px 12px; }
+.notice {
+  background: rgba(224,167,44,.1);
+  border: 1px solid rgba(224,167,44,.35);
+  color: #f0c76a;
+  border-radius: 8px;
+  padding: 11px 14px;
+  margin: 0 20px 14px;
+  font-size: 13px;
+}
+
+.empty-cell { color: var(--muted); padding: 18px 10px; }
+
+/* --- страница сертификата --- */
+
+.facts-list {
+  display: grid;
+  grid-template-columns: 190px 1fr;
+  gap: 8px 20px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.facts-list dt { color: var(--muted); }
+.facts-list dd { margin: 0; }
+.facts-list dd.mono { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+
+.button-link {
+  display: inline-block;
+  border: 1px solid #35507a;
+  background: #263248;
+  color: var(--text);
+  border-radius: 7px;
+  padding: 7px 16px;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.button-link:hover { background: #2d3d59; }
+
+button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+button:disabled:hover { background: #263248; }
+button.ghost.danger { background: none; border-color: #5a2b2d; color: #ffb3b5; }
+button.ghost.danger:hover { background: #3a2224; }
