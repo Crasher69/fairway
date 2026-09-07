@@ -1,0 +1,17 @@
+# бинарники
+/mitmproxy
+/mitmproxy.exe
+/*.exe
+/dist/
+
+# данные рантайма: CA, конфиг, снапшоты рейтингов, логи
+/data/
+*.pem
+*.key
+*.crt
+config.local.json
+*.log
+
+# IDE
+.idea/
+.vscode/
