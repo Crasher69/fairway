@@ -359,18 +359,22 @@ window.addEventListener('resize', renderChart);
 
 const views = ['monitor', 'proxies', 'lists', 'rules', 'cert'];
 
+function showView(name) {
+  if (!views.includes(name)) name = 'monitor';
+  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === name));
+  for (const view of views) $('view-' + view).hidden = view !== name;
+  if (name === 'cert') refreshCert().catch(showConfigError);
+  else if (name !== 'monitor') refreshSettings().catch(showConfigError);
+}
+
 document.querySelectorAll('.tab').forEach((tab) => {
-  tab.onclick = () => {
-    document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === tab));
-    const active = tab.dataset.view;
-    $('view-monitor').hidden = active !== 'monitor';
-    for (const view of views) {
-      if (view !== 'monitor') $('view-' + view).hidden = view !== active;
-    }
-    if (active === 'cert') refreshCert().catch(showConfigError);
-    else if (active !== 'monitor') refreshSettings().catch(showConfigError);
-  };
+  // Вкладка пишется в адрес: перезагрузка не сбрасывает её, а на нужный
+  // раздел можно дать ссылку.
+  tab.onclick = () => { window.location.hash = tab.dataset.view; };
 });
+
+window.addEventListener('hashchange', () => showView(window.location.hash.slice(1)));
+showView(window.location.hash.slice(1));
 
 // --- настройки ---
 

@@ -13,6 +13,12 @@
 
 * { box-sizing: border-box; }
 
+/* Атрибут hidden браузер реализует как display:none в своей таблице стилей,
+   а она проигрывает любому авторскому правилу. У нас `main { display: grid }`
+   и `.tabs { display: flex }` — без этой строки такие блоки не прятались бы
+   вовсе. Единственное место в файле, где !important оправдан. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--bg);
