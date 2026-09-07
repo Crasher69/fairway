@@ -147,7 +147,8 @@ td.name { font-family: var(--mono); }
   aside { position: static; }
 }
 
-/* --- вкладки и настройки --- */
+
+/* --- вкладки --- */
 
 .tabs { flex-basis: 100%; display: flex; gap: 8px; margin-top: 4px; }
 
@@ -165,20 +166,51 @@ td.name { font-family: var(--mono); }
 .tab:hover { color: var(--text); }
 .tab.active { background: #263248; color: var(--text); border-color: #35507a; }
 
-.config { padding: 20px; max-width: 1100px; }
-.config-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
-.config h2 { margin-top: 26px; }
-.config code { font-family: var(--mono); font-size: 12px; }
+/* --- страницы настроек --- */
 
-.row {
+.settings { padding: 20px; max-width: 1150px; }
+.settings h1 { margin: 0; }
+.settings h2 { margin-top: 28px; }
+.settings code { font-family: var(--mono); font-size: 12px; }
+
+.config-head {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.config-head .hint { margin: 0; }
+
+form .row {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
+  gap: 10px 14px;
+  align-items: flex-end;
   margin-top: 10px;
 }
 
-.row label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+/* Подпись над полем, а не сбоку: иначе форма из восьми полей расползается
+   в нечитаемую строку. */
+form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+form label input[type="checkbox"] { margin-right: 6px; }
+
+/* Чекбокс с подписью — наоборот, в строку. */
+form .row > label:has(input[type="checkbox"]) {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  padding-bottom: 6px;
+}
 
 input, select, button {
   background: var(--panel);
@@ -190,8 +222,10 @@ input, select, button {
   font-size: 13px;
 }
 
-input[type="number"] { width: 130px; }
+input[type="number"] { width: 170px; }
 input[type="checkbox"] { width: auto; padding: 0; }
+input:read-only { color: var(--muted); background: #191d24; }
+input:focus, select:focus { outline: none; border-color: #35507a; }
 
 button {
   cursor: pointer;
@@ -200,9 +234,33 @@ button {
 }
 
 button:hover { background: #2d3d59; }
-
 button.danger { border-color: #5a2b2d; background: #3a2224; color: #ffb3b5; }
 button.danger:hover { background: #4a2a2c; }
+
+td.actions { white-space: nowrap; text-align: right; }
+td.actions button { padding: 3px 10px; font-size: 12px; margin-left: 6px; }
+
+/* Прокси в листе — сеткой: полсотни имён в строку не читаются. */
+.checks {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 6px 14px;
+  margin: 8px 0 4px;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.checks label {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.checks label .muted { font-size: 11px; }
 
 .error {
   background: rgba(229,72,77,.12);
@@ -210,7 +268,9 @@ button.danger:hover { background: #4a2a2c; }
   color: #ffb3b5;
   border-radius: 6px;
   padding: 10px 12px;
-  margin: 12px 0;
+  margin: 0 20px 12px;
   white-space: pre-wrap;
   font-size: 13px;
 }
+
+.hint.settings { margin: 0 20px 12px; }

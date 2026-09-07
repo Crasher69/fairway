@@ -61,9 +61,6 @@ func (e *Editor) edit(change func(*config.Config) error) (*config.Config, error)
 func cloneConfig(src *config.Config) *config.Config {
 	dst := &config.Config{Defaults: src.Defaults}
 	dst.Proxies = append([]config.Proxy(nil), src.Proxies...)
-	for i, p := range src.Proxies {
-		dst.Proxies[i].Tags = append([]string(nil), p.Tags...)
-	}
 	dst.Lists = append([]config.List(nil), src.Lists...)
 	for i, l := range src.Lists {
 		dst.Lists[i].Proxies = append([]string(nil), l.Proxies...)
@@ -96,6 +93,43 @@ func (s *Server) addProxy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		cfg.Proxies = append(cfg.Proxies, body)
+		return nil
+	})
+}
+
+// updateProxy правит существующий прокси, в том числе переименовывает.
+// При переименовании ссылки в листах чинятся здесь же — иначе правка имени
+// разваливала бы конфиг.
+func (s *Server) updateProxy(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var body config.Proxy
+	if !decode(w, r, &body) {
+		return
+	}
+	s.applyEdit(w, func(cfg *config.Config) error {
+		index := -1
+		for i, existing := range cfg.Proxies {
+			if existing.Name == name {
+				index = i
+				continue
+			}
+			if existing.Name == body.Name {
+				return fmt.Errorf("прокси %q уже есть", body.Name)
+			}
+		}
+		if index < 0 {
+			return fmt.Errorf("прокси %q не найден", name)
+		}
+		cfg.Proxies[index] = body
+		if body.Name != name {
+			for i := range cfg.Lists {
+				for j, ref := range cfg.Lists[i].Proxies {
+					if ref == name {
+						cfg.Lists[i].Proxies[j] = body.Name
+					}
+				}
+			}
+		}
 		return nil
 	})
 }

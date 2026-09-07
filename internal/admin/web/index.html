@@ -25,7 +25,9 @@
     <div class="ca muted" id="ca-info"></div>
     <nav class="tabs">
       <button class="tab active" data-view="monitor">Мониторинг</button>
-      <button class="tab" data-view="config">Настройки</button>
+      <button class="tab" data-view="proxies">Прокси</button>
+      <button class="tab" data-view="lists">Листы</button>
+      <button class="tab" data-view="rules">Домены</button>
     </nav>
   </header>
 
@@ -85,42 +87,94 @@
     </section>
   </main>
 
-  <div id="view-config" class="config" hidden>
+  <div id="config-error" class="error settings" hidden></div>
+  <div id="config-readonly" class="hint settings" hidden>
+    Конфиг задан флагами <code>-upstream</code>, сохранять его некуда —
+    панель работает только на чтение.
+  </div>
+
+  <!-- Прокси -->
+  <div id="view-proxies" class="settings" hidden>
     <div class="config-head">
-      <p class="hint">Правки сохраняются в <code id="config-note">config.json</code>
-        и применяются сразу, без перезапуска.</p>
-      <button id="reload-config">Перечитать файл</button>
-    </div>
-    <div id="config-error" class="error" hidden></div>
-    <div id="config-readonly" class="hint" hidden>
-      Конфиг задан флагами <code>-upstream</code>, сохранять его некуда —
-      панель работает только на чтение.
+      <h1>Прокси</h1>
+      <span class="hint">Файл: <code class="config-note">config.json</code></span>
+      <button class="reload-config">Перечитать файл</button>
     </div>
 
-    <h2>Прокси</h2>
     <table id="cfg-proxies">
-      <thead><tr><th>Имя</th><th>Адрес</th><th>Метки</th><th></th></tr></thead>
+      <thead>
+        <tr>
+          <th>Имя</th><th>Схема</th><th>Адрес</th><th class="num">Порт</th>
+          <th>Логин</th><th>Страна</th><th>Комментарий</th><th></th>
+        </tr>
+      </thead>
       <tbody></tbody>
     </table>
-    <form id="add-proxy" class="row">
-      <input name="name" placeholder="имя" required>
-      <input name="url" placeholder="socks5://user:pass@host:1080" size="42" required>
-      <input name="tags" placeholder="метки через запятую">
-      <button>Добавить прокси</button>
-    </form>
 
-    <h2>Листы</h2>
+    <h2 id="proxy-form-title">Добавить прокси</h2>
+    <form id="proxy-form">
+      <div class="row">
+        <label>имя <input name="name" placeholder="p1" required></label>
+        <label>схема
+          <select name="scheme">
+            <option value="http">http</option>
+            <option value="https">https</option>
+            <option value="socks5">socks5</option>
+          </select>
+        </label>
+        <label>IP или хост <input name="host" placeholder="1.2.3.4" required></label>
+        <label>порт <input name="port" type="number" min="1" max="65535" placeholder="1080" required></label>
+      </div>
+      <div class="row">
+        <label>логин <input name="login" placeholder="необязательно"></label>
+        <label>пароль <input name="password" type="password" placeholder="необязательно"></label>
+        <label>страна <input name="country" placeholder="RU" size="6"></label>
+        <label>комментарий <input name="comment" placeholder="для чего этот прокси" size="30"></label>
+      </div>
+      <div class="row">
+        <button>Сохранить</button>
+        <button type="button" id="proxy-form-cancel" hidden>Отмена</button>
+        <span class="hint">Строку вида <code>socks5://user:pass@1.2.3.4:1080</code>
+          можно вставить в поле «IP или хост» — она разложится по полям.</span>
+      </div>
+    </form>
+  </div>
+
+  <!-- Листы -->
+  <div id="view-lists" class="settings" hidden>
+    <div class="config-head">
+      <h1>Листы</h1>
+      <span class="hint">Лист — набор прокси, который назначается домену.</span>
+      <button class="reload-config">Перечитать файл</button>
+    </div>
+
     <table id="cfg-lists">
-      <thead><tr><th>Лист</th><th>Прокси</th><th></th></tr></thead>
+      <thead><tr><th>Лист</th><th>Прокси</th><th class="num">Штук</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
-    <form id="save-list" class="row">
-      <input name="name" placeholder="имя листа" required>
-      <input name="proxies" placeholder="прокси через запятую" size="42" required>
-      <button>Сохранить лист</button>
-    </form>
 
-    <h2>Правила доменов</h2>
+    <h2 id="list-form-title">Создать лист</h2>
+    <form id="list-form">
+      <div class="row">
+        <label>имя <input name="name" placeholder="residential" required></label>
+      </div>
+      <p class="hint">Отметьте прокси, которые в него входят:</p>
+      <div id="list-members" class="checks"></div>
+      <div class="row">
+        <button>Сохранить лист</button>
+        <button type="button" id="list-form-cancel" hidden>Отмена</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Домены -->
+  <div id="view-rules" class="settings" hidden>
+    <div class="config-head">
+      <h1>Правила доменов</h1>
+      <span class="hint">Подбор: точное имя → самый длинный <code>*.суффикс</code> → <code>*</code> → по умолчанию.</span>
+      <button class="reload-config">Перечитать файл</button>
+    </div>
+
     <table id="cfg-domains">
       <thead>
         <tr>
@@ -131,25 +185,40 @@
       </thead>
       <tbody></tbody>
     </table>
-    <form id="save-domain" class="row">
-      <input name="pattern" placeholder="example.com или *.example.com" required>
-      <select name="list" id="domain-list-select"></select>
-      <label><input type="checkbox" name="mitm"> расшифровывать</label>
-      <input name="max_parallel_proxies" type="number" placeholder="прокси разом" min="-1" size="4">
-      <input name="max_conns_per_proxy" type="number" placeholder="соединений" min="-1" size="4">
-      <input name="ban_duration" placeholder="5m">
-      <button>Сохранить правило</button>
+
+    <h2 id="rule-form-title">Добавить правило</h2>
+    <form id="rule-form">
+      <div class="row">
+        <label>паттерн <input name="pattern" placeholder="example.com или *.example.com" size="28" required></label>
+        <label>лист <select name="list" id="rule-list-select" required></select></label>
+        <label><input type="checkbox" name="mitm"> расшифровывать TLS</label>
+      </div>
+      <div class="row">
+        <label>прокси разом <input name="max_parallel_proxies" type="number" min="-1" placeholder="0 — как в общих"></label>
+        <label>соединений на прокси <input name="max_conns_per_proxy" type="number" min="-1" placeholder="0 — как в общих"></label>
+        <label>бан <input name="ban_duration" placeholder="5m" size="8"></label>
+      </div>
+      <div class="row">
+        <button>Сохранить правило</button>
+        <button type="button" id="rule-form-cancel" hidden>Отмена</button>
+      </div>
     </form>
 
-    <h2>По умолчанию</h2>
-    <form id="save-defaults" class="row">
-      <label>лист <select name="list" id="defaults-list-select"></select></label>
-      <label><input type="checkbox" name="allow_direct"> разрешить напрямую</label>
-      <label><input type="checkbox" name="mitm"> расшифровывать</label>
-      <input name="max_parallel_proxies" type="number" placeholder="прокси разом" min="-1">
-      <input name="max_conns_per_proxy" type="number" placeholder="соединений" min="-1">
-      <input name="ban_duration" placeholder="5m">
-      <button>Сохранить</button>
+    <h2>Общие настройки</h2>
+    <form id="defaults-form">
+      <div class="row">
+        <label>лист по умолчанию <select name="list" id="defaults-list-select"></select></label>
+        <label><input type="checkbox" name="allow_direct"> разрешить напрямую</label>
+        <label><input type="checkbox" name="mitm"> расшифровывать TLS</label>
+      </div>
+      <div class="row">
+        <label>прокси разом <input name="max_parallel_proxies" type="number" min="-1"></label>
+        <label>соединений на прокси <input name="max_conns_per_proxy" type="number" min="-1"></label>
+        <label>бан <input name="ban_duration" placeholder="5m" size="8"></label>
+        <button>Сохранить</button>
+      </div>
+      <p class="hint">Без «разрешить напрямую» домен без правила получит 503 —
+        и это правильнее, чем молча уйти с вашего реального IP.</p>
     </form>
   </div>
 

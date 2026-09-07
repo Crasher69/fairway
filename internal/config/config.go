@@ -5,7 +5,10 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,10 +37,73 @@ type Defaults struct {
 }
 
 // Proxy — один апстрим-прокси.
+//
+// Поля разложены по отдельности: так их удобно править в панели и так же
+// прокси обычно и продают — «ip:port:логин:пароль». Строку целиком тоже можно
+// вставить в URL: при загрузке она разбирается на поля и из файла исчезает.
 type Proxy struct {
-	Name string   `json:"name"`
-	URL  string   `json:"url"` // scheme://user:pass@host:port
-	Tags []string `json:"tags,omitempty"`
+	Name string `json:"name"`
+	// Scheme — http, https или socks5. Пусто означает http.
+	Scheme   string `json:"scheme,omitempty"`
+	Host     string `json:"host,omitempty"`
+	Port     int    `json:"port,omitempty"`
+	Login    string `json:"login,omitempty"`
+	Password string `json:"password,omitempty"`
+	// Country и Comment ни на что не влияют, но без них список из полусотни
+	// прокси превращается в кашу из адресов.
+	Country string `json:"country,omitempty"`
+	Comment string `json:"comment,omitempty"`
+	// URL — способ задать всё одной строкой: scheme://user:pass@host:port.
+	// После разбора поле очищается, в файле остаётся разложенный вид.
+	URL string `json:"url,omitempty"`
+}
+
+// Normalize разбирает URL в отдельные поля и подставляет умолчания.
+func (p *Proxy) Normalize() error {
+	if p.URL != "" {
+		up, err := forward.ParseUpstream(p.URL)
+		if err != nil {
+			return err
+		}
+		if up.Scheme == "direct" {
+			p.Scheme, p.Host, p.Port = "direct", "", 0
+		} else {
+			host, port, err := net.SplitHostPort(up.Addr)
+			if err != nil {
+				return fmt.Errorf("адрес %q: %w", up.Addr, err)
+			}
+			number, err := strconv.Atoi(port)
+			if err != nil {
+				return fmt.Errorf("порт %q: %w", port, err)
+			}
+			p.Scheme, p.Host, p.Port = up.Scheme, host, number
+			p.Login, p.Password = up.User, up.Pass
+		}
+		p.URL = ""
+	}
+	if p.Scheme == "" {
+		p.Scheme = "http"
+	}
+	return nil
+}
+
+// ConnectURL собирает строку подключения для forward.ParseUpstream.
+func (p Proxy) ConnectURL() string {
+	if p.Scheme == "direct" {
+		return "direct"
+	}
+	scheme := p.Scheme
+	if scheme == "" {
+		scheme = "http"
+	}
+	address := p.Host
+	if p.Port > 0 {
+		address = net.JoinHostPort(p.Host, strconv.Itoa(p.Port))
+	}
+	if p.Login == "" && p.Password == "" {
+		return scheme + "://" + address
+	}
+	return scheme + "://" + url.UserPassword(p.Login, p.Password).String() + "@" + address
 }
 
 // List — именованный набор прокси.
@@ -120,14 +186,28 @@ func Parse(raw []byte) (*Config, error) {
 // существуют, URL разбираются. Конфиг с ошибкой не должен применяться.
 func (c *Config) Validate() error {
 	proxyNames := make(map[string]bool, len(c.Proxies))
-	for i, p := range c.Proxies {
+	for i := range c.Proxies {
+		p := &c.Proxies[i]
 		switch {
 		case p.Name == "":
 			return fmt.Errorf("proxies[%d]: пустое имя", i)
 		case proxyNames[p.Name]:
 			return fmt.Errorf("proxies[%d]: имя %q уже занято", i, p.Name)
 		}
-		if _, err := forward.ParseUpstream(p.URL); err != nil {
+		// Разбираем здесь, а не при загрузке: так одна форма приходит и из
+		// файла, и из панели, и проверяется одинаково.
+		if err := p.Normalize(); err != nil {
+			return fmt.Errorf("proxies[%d] (%s): %w", i, p.Name, err)
+		}
+		if p.Scheme != "direct" {
+			switch {
+			case p.Host == "":
+				return fmt.Errorf("proxies[%d] (%s): не указан адрес", i, p.Name)
+			case p.Port <= 0 || p.Port > 65535:
+				return fmt.Errorf("proxies[%d] (%s): порт %d вне диапазона", i, p.Name, p.Port)
+			}
+		}
+		if _, err := forward.ParseUpstream(p.ConnectURL()); err != nil {
 			return fmt.Errorf("proxies[%d] (%s): %w", i, p.Name, err)
 		}
 		proxyNames[p.Name] = true

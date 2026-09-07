@@ -13,7 +13,7 @@ const valid = `{
   "defaults": {"list": "ru", "allow_direct": false, "max_conns_per_proxy": 16, "ban_duration": "5m"},
   "proxies": [
     {"name": "p1", "url": "http://user:pass@1.2.3.4:3128"},
-    {"name": "p2", "url": "socks5://5.6.7.8:1080", "tags": ["ru"]}
+    {"name": "p2", "scheme": "socks5", "host": "5.6.7.8", "port": 1080, "country": "RU"}
   ],
   "lists": [{"name": "ru", "proxies": ["p1", "p2"]}],
   "domains": [
@@ -154,5 +154,80 @@ func TestSaveOmitsInheritedZeros(t *testing.T) {
 	}
 	if back.Domains[0].BanDuration != 0 || back.Defaults.BanDuration.Duration() != 2*time.Minute {
 		t.Errorf("после round-trip: домен %v, defaults %v", back.Domains[0].BanDuration, back.Defaults.BanDuration)
+	}
+}
+
+// TestProxyURLIsUnpacked — строку целиком можно вставить в url, но в файле
+// должен остаться разложенный вид: править по полям в панели удобнее.
+func TestProxyURLIsUnpacked(t *testing.T) {
+	tests := []struct {
+		raw    string
+		scheme string
+		host   string
+		port   int
+		login  string
+		pass   string
+	}{
+		{"socks5://bob:secret@1.2.3.4:1080", "socks5", "1.2.3.4", 1080, "bob", "secret"},
+		{"http://5.6.7.8:3128", "http", "5.6.7.8", 3128, "", ""},
+		{"1.2.3.4:8000", "http", "1.2.3.4", 8000, "", ""},
+		{"https://proxy.example.com", "https", "proxy.example.com", 443, "", ""},
+	}
+	for _, tt := range tests {
+		p := Proxy{Name: "p", URL: tt.raw}
+		if err := p.Normalize(); err != nil {
+			t.Errorf("%s: %v", tt.raw, err)
+			continue
+		}
+		if p.URL != "" {
+			t.Errorf("%s: url не очищен", tt.raw)
+		}
+		if p.Scheme != tt.scheme || p.Host != tt.host || p.Port != tt.port {
+			t.Errorf("%s разобран как %s://%s:%d", tt.raw, p.Scheme, p.Host, p.Port)
+		}
+		if p.Login != tt.login || p.Password != tt.pass {
+			t.Errorf("%s: креды %q/%q", tt.raw, p.Login, p.Password)
+		}
+	}
+}
+
+func TestConnectURLRoundTrip(t *testing.T) {
+	tests := []Proxy{
+		{Scheme: "socks5", Host: "1.2.3.4", Port: 1080, Login: "bob", Password: "secret"},
+		{Scheme: "http", Host: "5.6.7.8", Port: 3128},
+		{Scheme: "direct"},
+	}
+	for _, p := range tests {
+		back := Proxy{Name: "p", URL: p.ConnectURL()}
+		if err := back.Normalize(); err != nil {
+			t.Errorf("%+v -> %q: %v", p, p.ConnectURL(), err)
+			continue
+		}
+		if back.Scheme != p.Scheme || back.Host != p.Host || back.Port != p.Port ||
+			back.Login != p.Login || back.Password != p.Password {
+			t.Errorf("%+v не пережил round-trip: %+v", p, back)
+		}
+	}
+}
+
+func TestProxyValidation(t *testing.T) {
+	tests := map[string]string{
+		"без адреса":    `{"proxies":[{"name":"p","port":8080}]}`,
+		"без порта":     `{"proxies":[{"name":"p","host":"1.2.3.4"}]}`,
+		"порт за краем": `{"proxies":[{"name":"p","host":"1.2.3.4","port":70000}]}`,
+		"чужая схема":   `{"proxies":[{"name":"p","scheme":"ftp","host":"1.2.3.4","port":21}]}`,
+	}
+	for name, raw := range tests {
+		if cfg, err := Parse([]byte(raw)); err == nil {
+			t.Errorf("%s: ожидалась ошибка, получено %+v", name, cfg.Proxies)
+		}
+	}
+	// Схему можно не указывать — подставится http.
+	cfg, err := Parse([]byte(`{"proxies":[{"name":"p","host":"1.2.3.4","port":8080}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Proxies[0].Scheme != "http" {
+		t.Errorf("схема по умолчанию = %q, ожидалась http", cfg.Proxies[0].Scheme)
 	}
 }

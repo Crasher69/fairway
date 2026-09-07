@@ -63,7 +63,9 @@ async function refreshOverview() {
   $('certs').textContent = data.certs_cached;
   $('goroutines').textContent = data.goroutines;
   $('heap').textContent = data.heap_mb.toFixed(1) + ' МБ';
-  if (data.config_path) $('config-note').textContent = data.config_path;
+  if (data.config_path) {
+    document.querySelectorAll('.config-note').forEach((el) => { el.textContent = data.config_path; });
+  }
   if (data.ca_subject) {
     const until = new Date(data.ca_expires).toLocaleDateString('ru-RU');
     $('ca-info').textContent = `${data.ca_subject} — действует до ${until}`;
@@ -355,17 +357,30 @@ window.addEventListener('resize', renderChart);
 
 // --- вкладки ---
 
+const views = ['monitor', 'proxies', 'lists', 'rules'];
+
 document.querySelectorAll('.tab').forEach((tab) => {
   tab.onclick = () => {
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === tab));
-    const config = tab.dataset.view === 'config';
-    $('view-monitor').hidden = config;
-    $('view-config').hidden = !config;
-    if (config) refreshConfig().catch(showConfigError);
+    const active = tab.dataset.view;
+    $('view-monitor').hidden = active !== 'monitor';
+    for (const view of views) {
+      if (view !== 'monitor') $('view-' + view).hidden = view !== active;
+    }
+    if (active !== 'monitor') refreshSettings().catch(showConfigError);
   };
 });
 
 // --- настройки ---
+
+// Конфиг, показанный в формах последним: редактирование должно идти от того
+// же снимка, который видит пользователь.
+let settings = { proxies: [], lists: [], domains: [], defaults: {} };
+
+// Что сейчас редактируется. null — форма в режиме добавления.
+const editing = { proxy: null, list: null, rule: null };
+
+const number = (value) => (value === '' ? 0 : Number(value));
 
 async function send(method, path, body) {
   const resp = await fetch(path, {
@@ -375,10 +390,7 @@ async function send(method, path, body) {
   });
   const text = await resp.text();
   if (!resp.ok) {
-    if (resp.status === 501) {
-      // Конфиг собран из флагов -upstream, сохранять его некуда.
-      document.getElementById("config-readonly").hidden = false;
-    }
+    if (resp.status === 501) $('config-readonly').hidden = false;
     throw new Error(text.trim() || ('статус ' + resp.status));
   }
   return text ? JSON.parse(text) : null;
@@ -390,135 +402,287 @@ function showConfigError(err) {
   box.hidden = false;
 }
 
-function clearConfigError() {
+// edit прогоняет правку и перечитывает конфиг: сервер возвращает применённый
+// вариант, и показывать надо именно его, а не то, что мы отправили.
+function edit(action) {
   $('config-error').hidden = true;
+  action().then(refreshSettings).catch(showConfigError);
 }
 
-async function refreshConfig() {
+async function refreshSettings() {
   const cfg = await api('api/config');
-  renderConfigProxies(cfg.proxies || []);
-  renderConfigLists(cfg.lists || []);
-  renderConfigDomains(cfg.domains || []);
-  fillListSelects(cfg.lists || []);
-  fillDefaults(cfg.defaults || {});
+  settings = {
+    proxies: cfg.proxies || [],
+    lists: cfg.lists || [],
+    domains: cfg.domains || [],
+    defaults: cfg.defaults || {},
+  };
+  renderProxyTable();
+  renderListTable();
+  if (!editing.list) renderListMembers();
+  renderRuleTable();
+  fillListSelects();
+  fillDefaults();
 }
 
-function removeButton(onClick) {
+function actionCell(...buttons) {
   const td = document.createElement('td');
-  const button = document.createElement('button');
-  button.className = 'danger';
-  button.textContent = 'Удалить';
-  button.onclick = onClick;
-  td.append(button);
+  td.className = 'actions';
+  td.append(...buttons);
   return td;
+}
+
+function button(label, onClick, extra) {
+  const el = document.createElement('button');
+  el.type = 'button';
+  el.textContent = label;
+  if (extra) el.className = extra;
+  el.onclick = onClick;
+  return el;
 }
 
 function textCell(value) {
   const td = document.createElement('td');
-  td.textContent = value ?? '';
+  td.textContent = (value === undefined || value === null || value === '') ? '—' : String(value);
   return td;
 }
 
-function edit(action) {
-  clearConfigError();
-  action().then(refreshConfig).catch(showConfigError);
+function emptyRow(columns, text) {
+  const tr = document.createElement('tr');
+  const td = document.createElement('td');
+  td.colSpan = columns;
+  td.className = 'muted';
+  td.textContent = text;
+  tr.append(td);
+  return tr;
 }
 
-function renderConfigProxies(proxies) {
+// --- прокси ---
+
+function renderProxyTable() {
   const body = $('cfg-proxies').querySelector('tbody');
-  body.replaceChildren(...proxies.map((p) => {
+  if (!settings.proxies.length) {
+    body.replaceChildren(emptyRow(8, 'Прокси пока нет'));
+    return;
+  }
+  body.replaceChildren(...settings.proxies.map((p) => {
     const tr = document.createElement('tr');
     const name = textCell(p.name);
     name.className = 'name';
+    const host = textCell(p.host);
+    host.className = 'name';
     tr.append(
       name,
-      textCell(p.url),
-      textCell((p.tags || []).join(', ')),
-      removeButton(() => edit(() => send('DELETE', 'api/proxies/' + encodeURIComponent(p.name)))),
+      textCell(p.scheme),
+      host,
+      cell(p.port || '—'),
+      textCell(p.login),
+      textCell(p.country),
+      textCell(p.comment),
+      actionCell(
+        button('Изменить', () => startProxyEdit(p)),
+        button('Удалить', () => edit(() => send('DELETE', 'api/proxies/' + encodeURIComponent(p.name))), 'danger'),
+      ),
     );
     return tr;
   }));
 }
 
-function renderConfigLists(lists) {
+function startProxyEdit(proxy) {
+  editing.proxy = proxy.name;
+  const form = $('proxy-form');
+  form.name.value = proxy.name;
+  form.scheme.value = proxy.scheme || 'http';
+  form.host.value = proxy.host || '';
+  form.port.value = proxy.port || '';
+  form.login.value = proxy.login || '';
+  form.password.value = proxy.password || '';
+  form.country.value = proxy.country || '';
+  form.comment.value = proxy.comment || '';
+  $('proxy-form-title').textContent = 'Изменить прокси: ' + proxy.name;
+  $('proxy-form-cancel').hidden = false;
+  form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function resetProxyForm() {
+  editing.proxy = null;
+  $('proxy-form').reset();
+  $('proxy-form-title').textContent = 'Добавить прокси';
+  $('proxy-form-cancel').hidden = true;
+}
+
+$('proxy-form-cancel').onclick = resetProxyForm;
+
+$('proxy-form').onsubmit = (event) => {
+  event.preventDefault();
+  const form = event.target;
+  const host = form.host.value.trim();
+  const proxy = {
+    name: form.name.value.trim(),
+    login: form.login.value,
+    password: form.password.value,
+    country: form.country.value.trim(),
+    comment: form.comment.value.trim(),
+  };
+  // Целую строку подключения удобно вставлять прямо из прайса поставщика,
+  // поэтому отдаём её серверу как есть — он разложит её по полям.
+  if (host.includes('://') || host.split(':').length > 2) {
+    proxy.url = host;
+  } else {
+    proxy.scheme = form.scheme.value;
+    proxy.host = host;
+    proxy.port = Number(form.port.value);
+  }
+
+  const target = editing.proxy;
+  edit(() => (target
+    ? send('PUT', 'api/proxies/' + encodeURIComponent(target), proxy)
+    : send('POST', 'api/proxies', proxy)
+  ).then(resetProxyForm));
+};
+
+// --- листы ---
+
+function renderListTable() {
   const body = $('cfg-lists').querySelector('tbody');
-  body.replaceChildren(...lists.map((l) => {
+  if (!settings.lists.length) {
+    body.replaceChildren(emptyRow(4, 'Листов пока нет'));
+    return;
+  }
+  body.replaceChildren(...settings.lists.map((l) => {
     const tr = document.createElement('tr');
     const name = textCell(l.name);
     name.className = 'name';
     tr.append(
       name,
       textCell((l.proxies || []).join(', ')),
-      removeButton(() => edit(() => send('DELETE', 'api/lists/' + encodeURIComponent(l.name)))),
+      cell((l.proxies || []).length),
+      actionCell(
+        button('Изменить', () => startListEdit(l)),
+        button('Удалить', () => edit(() => send('DELETE', 'api/lists/' + encodeURIComponent(l.name))), 'danger'),
+      ),
     );
     return tr;
   }));
 }
 
-function renderConfigDomains(domains) {
+// renderListMembers рисует галочки по всем известным прокси: набирать имена
+// руками — верный способ ошибиться и получить отказ валидации.
+function renderListMembers(selected) {
+  const chosen = new Set(selected || []);
+  const box = $('list-members');
+  if (!settings.proxies.length) {
+    box.replaceChildren(document.createTextNode('Сначала добавьте хотя бы один прокси.'));
+    return;
+  }
+  box.replaceChildren(...settings.proxies.map((p) => {
+    const label = document.createElement('label');
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.value = p.name;
+    input.checked = chosen.has(p.name);
+    const title = document.createElement('span');
+    title.textContent = p.name;
+    const where = document.createElement('span');
+    where.className = 'muted';
+    where.textContent = [p.country, p.host].filter(Boolean).join(' · ');
+    label.append(input, title, where);
+    return label;
+  }));
+}
+
+function selectedMembers() {
+  return [...$('list-members').querySelectorAll('input:checked')].map((input) => input.value);
+}
+
+function startListEdit(list) {
+  editing.list = list.name;
+  const form = $('list-form');
+  form.name.value = list.name;
+  // Переименование листа сломало бы ссылки в правилах доменов, поэтому
+  // при правке имя не меняется.
+  form.name.readOnly = true;
+  renderListMembers(list.proxies || []);
+  $('list-form-title').textContent = 'Изменить лист: ' + list.name;
+  $('list-form-cancel').hidden = false;
+  form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function resetListForm() {
+  editing.list = null;
+  const form = $('list-form');
+  form.reset();
+  form.name.readOnly = false;
+  renderListMembers();
+  $('list-form-title').textContent = 'Создать лист';
+  $('list-form-cancel').hidden = true;
+}
+
+$('list-form-cancel').onclick = resetListForm;
+
+$('list-form').onsubmit = (event) => {
+  event.preventDefault();
+  const form = event.target;
+  edit(() => send('PUT', 'api/lists', {
+    name: form.name.value.trim(),
+    proxies: selectedMembers(),
+  }).then(resetListForm));
+};
+
+// --- правила доменов ---
+
+function renderRuleTable() {
   const body = $('cfg-domains').querySelector('tbody');
-  body.replaceChildren(...domains.map((d) => {
+  if (!settings.domains.length) {
+    body.replaceChildren(emptyRow(7, 'Правил пока нет — все домены идут по общим настройкам'));
+    return;
+  }
+  body.replaceChildren(...settings.domains.map((d) => {
     const tr = document.createElement('tr');
     const pattern = textCell(d.pattern);
     pattern.className = 'name';
-    // mitm может отсутствовать — это «наследовать из defaults», а не «выключено».
-    const mitm = d.mitm === undefined || d.mitm === null ? 'из defaults' : (d.mitm ? 'да' : 'нет');
+    // mitm может отсутствовать — это «наследовать», а не «выключено».
+    const mitm = (d.mitm === undefined || d.mitm === null) ? 'из общих' : (d.mitm ? 'да' : 'нет');
     tr.append(
       pattern,
       textCell(d.list),
       textCell(mitm),
       cell(d.max_parallel_proxies || '—'),
       cell(d.max_conns_per_proxy || '—'),
-      textCell(d.ban_duration || '—'),
-      removeButton(() => edit(() => send('DELETE', 'api/domains/' + encodeURIComponent(d.pattern)))),
+      textCell(d.ban_duration),
+      actionCell(
+        button('Изменить', () => startRuleEdit(d)),
+        button('Удалить', () => edit(() => send('DELETE', 'api/domains/' + encodeURIComponent(d.pattern))), 'danger'),
+      ),
     );
     return tr;
   }));
 }
 
-function fillListSelects(lists) {
-  for (const id of ['domain-list-select', 'defaults-list-select']) {
-    const select = $(id);
-    const previous = select.value;
-    const options = lists.map((l) => new Option(l.name, l.name));
-    if (id === 'defaults-list-select') options.unshift(new Option('— не задан —', ''));
-    select.replaceChildren(...options);
-    select.value = previous;
-  }
+function startRuleEdit(rule) {
+  editing.rule = rule.pattern;
+  const form = $('rule-form');
+  form.pattern.value = rule.pattern;
+  form.list.value = rule.list;
+  form.mitm.checked = !!rule.mitm;
+  form.max_parallel_proxies.value = rule.max_parallel_proxies ?? '';
+  form.max_conns_per_proxy.value = rule.max_conns_per_proxy ?? '';
+  form.ban_duration.value = rule.ban_duration || '';
+  $('rule-form-title').textContent = 'Изменить правило: ' + rule.pattern;
+  $('rule-form-cancel').hidden = false;
+  form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-function fillDefaults(defaults) {
-  const form = $('save-defaults');
-  form.list.value = defaults.list || '';
-  form.allow_direct.checked = !!defaults.allow_direct;
-  form.mitm.checked = !!defaults.mitm;
-  form.max_parallel_proxies.value = defaults.max_parallel_proxies ?? '';
-  form.max_conns_per_proxy.value = defaults.max_conns_per_proxy ?? '';
-  form.ban_duration.value = defaults.ban_duration || '';
+function resetRuleForm() {
+  editing.rule = null;
+  $('rule-form').reset();
+  $('rule-form-title').textContent = 'Добавить правило';
+  $('rule-form-cancel').hidden = true;
 }
 
-const number = (value) => (value === '' ? 0 : Number(value));
-const list = (value) => value.split(',').map((s) => s.trim()).filter(Boolean);
+$('rule-form-cancel').onclick = resetRuleForm;
 
-$('add-proxy').onsubmit = (event) => {
-  event.preventDefault();
-  const form = event.target;
-  const proxy = { name: form.name.value.trim(), url: form.url.value.trim() };
-  const tags = list(form.tags.value);
-  if (tags.length) proxy.tags = tags;
-  edit(() => send('POST', 'api/proxies', proxy).then(() => form.reset()));
-};
-
-$('save-list').onsubmit = (event) => {
-  event.preventDefault();
-  const form = event.target;
-  edit(() => send('PUT', 'api/lists', {
-    name: form.name.value.trim(),
-    proxies: list(form.proxies.value),
-  }).then(() => form.reset()));
-};
-
-$('save-domain').onsubmit = (event) => {
+$('rule-form').onsubmit = (event) => {
   event.preventDefault();
   const form = event.target;
   const rule = {
@@ -529,10 +693,47 @@ $('save-domain').onsubmit = (event) => {
     ban_duration: form.ban_duration.value.trim(),
   };
   if (form.mitm.checked) rule.mitm = true;
-  edit(() => send('PUT', 'api/domains', rule).then(() => form.reset()));
+
+  const previous = editing.rule;
+  edit(() => send('PUT', 'api/domains', rule)
+    // Паттерн — это имя правила. Если его поменяли, старое надо убрать,
+    // иначе один домен окажется описан дважды.
+    .then(() => (previous && previous !== rule.pattern
+      ? send('DELETE', 'api/domains/' + encodeURIComponent(previous))
+      : null))
+    .then(resetRuleForm));
 };
 
-$('save-defaults').onsubmit = (event) => {
+// --- общие настройки ---
+
+function fillListSelects() {
+  const names = settings.lists.map((l) => l.name);
+
+  const ruleSelect = $('rule-list-select');
+  const rulePrevious = ruleSelect.value;
+  ruleSelect.replaceChildren(...names.map((name) => new Option(name, name)));
+  if (names.includes(rulePrevious)) ruleSelect.value = rulePrevious;
+
+  const defaultsSelect = $('defaults-list-select');
+  const defaultsPrevious = defaultsSelect.value;
+  defaultsSelect.replaceChildren(
+    new Option('— не задан —', ''),
+    ...names.map((name) => new Option(name, name)),
+  );
+  defaultsSelect.value = names.includes(defaultsPrevious) ? defaultsPrevious : (settings.defaults.list || '');
+}
+
+function fillDefaults() {
+  const form = $('defaults-form');
+  form.list.value = settings.defaults.list || '';
+  form.allow_direct.checked = !!settings.defaults.allow_direct;
+  form.mitm.checked = !!settings.defaults.mitm;
+  form.max_parallel_proxies.value = settings.defaults.max_parallel_proxies ?? '';
+  form.max_conns_per_proxy.value = settings.defaults.max_conns_per_proxy ?? '';
+  form.ban_duration.value = settings.defaults.ban_duration || '';
+}
+
+$('defaults-form').onsubmit = (event) => {
   event.preventDefault();
   const form = event.target;
   edit(() => send('PUT', 'api/defaults', {
@@ -545,4 +746,6 @@ $('save-defaults').onsubmit = (event) => {
   }));
 };
 
-$('reload-config').onclick = () => edit(() => send('POST', 'api/config/reload'));
+document.querySelectorAll('.reload-config').forEach((btn) => {
+  btn.onclick = () => edit(() => send('POST', 'api/config/reload'));
+});

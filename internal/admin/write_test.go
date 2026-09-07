@@ -111,7 +111,8 @@ func TestAddProxy(t *testing.T) {
 	e := newEditable(t)
 
 	code, body := send(t, "POST", e.url+"/api/proxies",
-		config.Proxy{Name: "новый", URL: "socks5://user:pass@9.9.9.9:1080", Tags: []string{"ru"}})
+		config.Proxy{Name: "новый", Scheme: "socks5", Host: "9.9.9.9", Port: 1080,
+			Login: "user", Password: "pass", Country: "RU", Comment: "куплен на месяц"})
 	if code != http.StatusOK {
 		t.Fatalf("статус %d: %s", code, body)
 	}
@@ -120,8 +121,15 @@ func TestAddProxy(t *testing.T) {
 	if len(disk.Proxies) != 3 {
 		t.Fatalf("на диске %d прокси, ожидалось 3", len(disk.Proxies))
 	}
-	if disk.Proxies[2].Name != "новый" || disk.Proxies[2].URL != "socks5://user:pass@9.9.9.9:1080" {
-		t.Errorf("прокси сохранён неверно: %+v", disk.Proxies[2])
+	saved := disk.Proxies[2]
+	if saved.Name != "новый" || saved.Scheme != "socks5" || saved.Host != "9.9.9.9" || saved.Port != 1080 {
+		t.Errorf("прокси сохранён неверно: %+v", saved)
+	}
+	if saved.Login != "user" || saved.Password != "pass" || saved.Country != "RU" {
+		t.Errorf("реквизиты и страна не сохранились: %+v", saved)
+	}
+	if got := saved.ConnectURL(); got != "socks5://user:pass@9.9.9.9:1080" {
+		t.Errorf("строка подключения = %q", got)
 	}
 	if e.applied != 1 {
 		t.Errorf("конфиг применён %d раз, ожидался 1", e.applied)
@@ -322,5 +330,100 @@ func TestWriteRequiresToken(t *testing.T) {
 	code, _ := send(t, "POST", e.url+"/api/proxies", config.Proxy{Name: "x", URL: "http://1.1.1.1:80"})
 	if code != http.StatusUnauthorized {
 		t.Errorf("правка без токена прошла со статусом %d", code)
+	}
+}
+
+func TestUpdateProxy(t *testing.T) {
+	e := newEditable(t)
+
+	code, body := send(t, "PUT", e.url+"/api/proxies/slow",
+		config.Proxy{Name: "slow", Scheme: "socks5", Host: "7.7.7.7", Port: 1080,
+			Login: "u", Password: "p", Country: "NL", Comment: "переехал"})
+	if code != http.StatusOK {
+		t.Fatalf("статус %d: %s", code, body)
+	}
+
+	disk := e.onDisk(t)
+	var updated *config.Proxy
+	for i := range disk.Proxies {
+		if disk.Proxies[i].Name == "slow" {
+			updated = &disk.Proxies[i]
+		}
+	}
+	if updated == nil {
+		t.Fatal("прокси пропал после правки")
+	}
+	if updated.Host != "7.7.7.7" || updated.Scheme != "socks5" || updated.Country != "NL" {
+		t.Errorf("правка не сохранилась: %+v", updated)
+	}
+}
+
+// TestRenameProxyFixesLists — переименование без починки ссылок развалило бы
+// конфиг: лист остался бы указывать на несуществующее имя.
+func TestRenameProxyFixesLists(t *testing.T) {
+	e := newEditable(t)
+
+	code, body := send(t, "PUT", e.url+"/api/proxies/slow",
+		config.Proxy{Name: "slow-new", Scheme: "http", Host: "2.2.2.2", Port: 8080})
+	if code != http.StatusOK {
+		t.Fatalf("статус %d: %s", code, body)
+	}
+
+	disk := e.onDisk(t)
+	names := map[string]bool{}
+	for _, p := range disk.Proxies {
+		names[p.Name] = true
+	}
+	if !names["slow-new"] || names["slow"] {
+		t.Errorf("прокси после переименования: %v", names)
+	}
+	for _, l := range disk.Lists {
+		for _, ref := range l.Proxies {
+			if ref == "slow" {
+				t.Errorf("лист %s ссылается на старое имя", l.Name)
+			}
+		}
+	}
+}
+
+func TestUpdateProxyRejectsNameClash(t *testing.T) {
+	e := newEditable(t)
+	code, _ := send(t, "PUT", e.url+"/api/proxies/slow",
+		config.Proxy{Name: "fast", Scheme: "http", Host: "2.2.2.2", Port: 8080})
+	if code != http.StatusBadRequest {
+		t.Errorf("переименование в занятое имя прошло со статусом %d", code)
+	}
+}
+
+func TestUpdateMissingProxy(t *testing.T) {
+	e := newEditable(t)
+	code, _ := send(t, "PUT", e.url+"/api/proxies/нет-такого",
+		config.Proxy{Name: "x", Scheme: "http", Host: "1.1.1.1", Port: 80})
+	if code != http.StatusBadRequest {
+		t.Errorf("правка несуществующего прокси вернула %d", code)
+	}
+}
+
+// TestAddProxyFromPastedURL — строку из прайса поставщика можно вставить
+// целиком, сервер разложит её по полям.
+func TestAddProxyFromPastedURL(t *testing.T) {
+	e := newEditable(t)
+
+	code, body := send(t, "POST", e.url+"/api/proxies",
+		map[string]string{"name": "вставленный", "url": "socks5://bob:secret@8.8.8.8:1080"})
+	if code != http.StatusOK {
+		t.Fatalf("статус %d: %s", code, body)
+	}
+
+	disk := e.onDisk(t)
+	saved := disk.Proxies[len(disk.Proxies)-1]
+	if saved.Scheme != "socks5" || saved.Host != "8.8.8.8" || saved.Port != 1080 {
+		t.Errorf("строка не разложилась: %+v", saved)
+	}
+	if saved.Login != "bob" || saved.Password != "secret" {
+		t.Errorf("креды потеряны: %+v", saved)
+	}
+	if saved.URL != "" {
+		t.Errorf("в файле осталась строка url: %q", saved.URL)
 	}
 }

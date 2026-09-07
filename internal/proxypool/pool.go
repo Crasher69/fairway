@@ -76,7 +76,7 @@ func (p *Pool) Apply(cfg *config.Config) error {
 	p.mu.RUnlock()
 
 	for _, pc := range cfg.Proxies {
-		up, err := forward.ParseUpstream(pc.URL)
+		up, err := forward.ParseUpstream(pc.ConnectURL())
 		if err != nil {
 			return fmt.Errorf("прокси %s: %w", pc.Name, err)
 		}
