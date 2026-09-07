@@ -816,7 +816,10 @@ async function refreshCert() {
   // Отпечаток разбиваем по два символа: так его сверяют глазами с тем,
   // что показывает системное хранилище.
   $('cert-fingerprint').textContent = (data.fingerprint.match(/../g) || []).join(':');
-  $('cert-store').textContent = data.trust.store;
+  $('cert-thumbprint').textContent = (data.trust.thumbprint.match(/../g) || []).join(':');
+  $('cert-store').textContent = data.trust.scope
+    ? data.trust.store + ' — ' + data.trust.scope
+    : data.trust.store;
 
   const state = $('cert-state');
   state.replaceChildren();

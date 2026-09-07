@@ -1,6 +1,7 @@
 package mitmca
 
 import (
+	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -18,38 +19,64 @@ import (
 // Первое: ставим только в пользовательское хранилище, а не в машинное. Прав
 // администратора не нужно, и затронут только текущий пользователь.
 //
-// Второе: всё делается через штатные утилиты ОС (certutil, security,
-// update-ca-certificates). Лезть в системные хранилища самостоятельно — верный
-// способ оставить машину в неконсистентном состоянии.
+// Второе: всё делается через штатные утилиты ОС (certutil, security).
+// Лезть в системные хранилища самостоятельно — верный способ оставить машину
+// в неконсистентном состоянии.
 
 // TrustState — что известно о сертификате в хранилище системы.
 type TrustState struct {
-	Supported   bool   `json:"supported"`
-	Installed   bool   `json:"installed"`
+	Supported bool `json:"supported"`
+	Installed bool `json:"installed"`
+	// Scope — где именно нашёлся: у пользователя или на всю машину.
+	Scope string `json:"scope,omitempty"`
+	// Fingerprint — SHA-256, его показывают человеку.
 	Fingerprint string `json:"fingerprint"`
-	Store       string `json:"store"`
-	Hint        string `json:"hint,omitempty"`
+	// Thumbprint — SHA-1. Windows опознаёт сертификаты только по нему,
+	// SHA-256 в certutil не работает совсем.
+	Thumbprint string `json:"thumbprint"`
+	Store      string `json:"store"`
+	Hint       string `json:"hint,omitempty"`
 }
 
-// Fingerprint — SHA-256 отпечаток корневого сертификата в верхнем регистре.
-// По нему сертификат ищется в хранилище и по нему же его сверяет человек.
+// Fingerprint — SHA-256 отпечаток в верхнем регистре: то, что видит человек
+// и что показывают современные просмотрщики сертификатов.
 func (c *CA) Fingerprint() string {
 	sum := sha256.Sum256(c.cert.Raw)
 	return strings.ToUpper(hex.EncodeToString(sum[:]))
 }
 
-// TrustStatus сообщает, стоит ли наш CA в доверенных у текущего пользователя.
+// Thumbprint — SHA-1 отпечаток. Нужен не ради безопасности, а потому что
+// хранилище Windows адресует сертификаты именно им: certutil с SHA-256
+// молча не находит ничего.
+func (c *CA) Thumbprint() string {
+	sum := sha1.Sum(c.cert.Raw)
+	return strings.ToUpper(hex.EncodeToString(sum[:]))
+}
+
+// TrustStatus сообщает, стоит ли наш CA в доверенных.
 func (c *CA) TrustStatus() TrustState {
-	state := TrustState{Fingerprint: c.Fingerprint()}
+	state := TrustState{Fingerprint: c.Fingerprint(), Thumbprint: c.Thumbprint()}
 	switch runtime.GOOS {
 	case "windows":
 		state.Supported = true
-		state.Store = "Доверенные корневые центры сертификации (текущий пользователь)"
-		state.Installed = windowsHasCert(c.Fingerprint())
+		state.Store = "Доверенные корневые центры сертификации"
+		// Смотрим оба хранилища: сертификат мог поставить кто-то руками,
+		// и «не установлен» при живом сертификате в машинном хранилище —
+		// худшее, что панель может сообщить.
+		switch {
+		case windowsHasCert(c.Thumbprint(), true):
+			state.Installed, state.Scope = true, "текущий пользователь"
+		case windowsHasCert(c.Thumbprint(), false):
+			state.Installed, state.Scope = true, "вся машина"
+			state.Hint = "Сертификат стоит в машинном хранилище — удалить его отсюда " +
+				"нельзя, нужны права администратора."
+		}
 	case "darwin":
 		state.Supported = true
 		state.Store = "Связка ключей «Вход»"
-		state.Installed = darwinHasCert(c.Fingerprint())
+		if darwinHasCert(c.Fingerprint()) {
+			state.Installed, state.Scope = true, "текущий пользователь"
+		}
 	default:
 		state.Store = "системное хранилище"
 		state.Hint = "На Linux установка зависит от дистрибутива и требует прав root: " +
@@ -89,7 +116,11 @@ func (c *CA) Install() error {
 func (c *CA) Uninstall() error {
 	switch runtime.GOOS {
 	case "windows":
-		return run("certutil", "-user", "-delstore", "Root", c.Fingerprint())
+		if !windowsHasCert(c.Thumbprint(), true) && windowsHasCert(c.Thumbprint(), false) {
+			return fmt.Errorf("сертификат стоит в машинном хранилище: удалите его из " +
+				"оснастки certmgr с правами администратора")
+		}
+		return run("certutil", "-user", "-delstore", "Root", c.Thumbprint())
 	case "darwin":
 		path, cleanup, err := c.tempCert()
 		if err != nil {
@@ -120,9 +151,20 @@ func (c *CA) tempCert() (string, func(), error) {
 	return file.Name(), func() { os.Remove(file.Name()) }, nil
 }
 
-func windowsHasCert(fingerprint string) bool {
-	// certutil ищет по отпечатку и возвращает ненулевой код, если не нашёл.
-	return exec.Command("certutil", "-user", "-verifystore", "Root", fingerprint).Run() == nil
+// windowsHasCert ищет сертификат по SHA-1 в пользовательском или машинном
+// хранилище.
+//
+// Именно -store, а не -verifystore: второй помимо поиска строит и проверяет
+// цепочку, в том числе пробует узнать статус отзыва. У приватного CA нет ни
+// CRL, ни OCSP, поэтому проверка падает — и установленный сертификат
+// выглядел бы отсутствующим.
+func windowsHasCert(thumbprint string, userStore bool) bool {
+	args := []string{}
+	if userStore {
+		args = append(args, "-user")
+	}
+	args = append(args, "-store", "Root", thumbprint)
+	return exec.Command("certutil", args...).Run() == nil
 }
 
 func darwinHasCert(fingerprint string) bool {
