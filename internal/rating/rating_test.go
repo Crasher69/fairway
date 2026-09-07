@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"mitm/internal/config"
-	"mitm/internal/forward"
-	"mitm/internal/proxypool"
+	"fairway/internal/config"
+	"fairway/internal/forward"
+	"fairway/internal/proxypool"
 )
 
 func TestEWMAFirstValueIsTakenAsIs(t *testing.T) {

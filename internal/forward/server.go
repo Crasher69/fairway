@@ -5,6 +5,7 @@ package forward
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"log"
@@ -15,14 +16,20 @@ import (
 )
 
 // Server принимает подключения как обычный HTTP/HTTPS прокси.
-// HTTPS на этом этапе только туннелируется (CONNECT); расшифровка появится
-// на этапе 4 вместе с MITM.
+// HTTPS либо туннелируется как есть, либо расшифровывается — это решает
+// правило домена (mitm) и наличие Issuer.
 type Server struct {
 	// Pick выбирает маршрут для домена. Обязателен. Ошибка означает
 	// «нет живого прокси» — клиент получит 503.
 	Pick func(domain string) (*Route, error)
 	// Observe вызывается по завершении каждого запроса. Может быть nil.
 	Observe func(Sample)
+	// Issuer выпускает сертификаты для расшифровки TLS. Без него правило
+	// mitm: true не действует — соединение просто туннелируется.
+	Issuer CertIssuer
+	// OriginTLS — шаблон настроек TLS для соединения с целью в режиме MITM.
+	// Обычно nil: сертификат цели проверяется по системным корням.
+	OriginTLS *tls.Config
 	// DialTimeout ограничивает установку соединения с целью через апстрим.
 	DialTimeout time.Duration
 	Logger      *log.Logger
@@ -56,6 +63,15 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	defer route.release()
 	up := route.Upstream
 	sample.Upstream = route.Name
+
+	if route.MITM {
+		if s.Issuer == nil {
+			s.logf("%s: MITM включён правилом, но выпуск сертификатов не настроен — туннелирую как есть", sample.Domain)
+		} else {
+			s.mitmTunnel(w, route, target)
+			return
+		}
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), s.dialTimeout())
 	defer cancel()

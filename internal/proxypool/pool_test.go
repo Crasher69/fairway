@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"mitm/internal/config"
+	"fairway/internal/config"
 )
 
 func mustConfig(t *testing.T, raw string) *config.Config {

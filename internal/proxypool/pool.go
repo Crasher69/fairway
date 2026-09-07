@@ -9,8 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"mitm/internal/config"
-	"mitm/internal/forward"
+	"fairway/internal/config"
+	"fairway/internal/forward"
 )
 
 var (

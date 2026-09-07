@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"mitm/internal/forward"
+	"fairway/internal/forward"
 )
 
 // Config — всё дерево настроек.

@@ -1,4 +1,4 @@
-// Command mitmproxy — адаптивный прокси-балансировщик с опциональным MITM.
+// Command fairway — адаптивный прокси-балансировщик с опциональным MITM.
 package main
 
 import (
@@ -15,10 +15,11 @@ import (
 	"syscall"
 	"time"
 
-	"mitm/internal/config"
-	"mitm/internal/forward"
-	"mitm/internal/proxypool"
-	"mitm/internal/rating"
+	"fairway/internal/config"
+	"fairway/internal/forward"
+	"fairway/internal/mitmca"
+	"fairway/internal/proxypool"
+	"fairway/internal/rating"
 )
 
 var version = "dev"
@@ -42,11 +43,28 @@ func main() {
 		dialTimeout  = flag.Duration("dial-timeout", 15*time.Second, "таймаут подключения к цели через апстрим")
 		pollInterval = flag.Duration("config-poll", config.DefaultPollInterval, "как часто перечитывать конфиг")
 		ratingSave   = flag.Duration("ratings-save", 30*time.Second, "как часто сохранять рейтинги на диск")
+		exportCA     = flag.String("export-ca", "", "сохранить корневой сертификат в указанный файл и выйти")
 	)
 	flag.Var(&upstreams, "upstream", "апстрим scheme://user:pass@host:port в обход конфига; можно повторять")
 	flag.Parse()
 
 	logger := log.New(os.Stderr, "", log.LstdFlags|log.Lmsgprefix)
+
+	// CA поднимаем первым: -export-ca должен работать и до того, как заведён
+	// хоть один прокси, — сертификат раскатывают по машинам заранее.
+	ca, err := mitmca.LoadOrCreate(*dataDir)
+	if err != nil {
+		logger.Fatalf("корневой сертификат: %v", err)
+	}
+	if *exportCA != "" {
+		if err := ca.Export(*exportCA); err != nil {
+			logger.Fatalf("экспорт корневого сертификата: %v", err)
+		}
+		logger.Printf("корневой сертификат сохранён в %s", *exportCA)
+		logger.Print("импортируйте его в «Доверенные корневые центры» на машинах сети")
+		return
+	}
+	logger.Printf("корневой CA: %s (до %s)", ca.Subject(), ca.NotAfter().Format("02.01.2006"))
 
 	cfg, err := loadConfig(logger, *configPath, upstreams)
 	if err != nil {
@@ -97,6 +115,7 @@ func main() {
 
 	srv := &forward.Server{
 		Pick:        router(pool),
+		Issuer:      mitmca.NewIssuer(ca),
 		DialTimeout: *dialTimeout,
 		Logger:      logger,
 		Observe: func(s forward.Sample) {
@@ -105,7 +124,7 @@ func main() {
 		},
 	}
 
-	logger.Printf("mitmproxy %s: прокси на %s, конфиг %s, данные в %s (админка на %s появится на этапе 5)",
+	logger.Printf("fairway %s: прокси на %s, конфиг %s, данные в %s (админка на %s появится на этапе 5)",
 		version, *proxyAddr, *configPath, *dataDir, *adminAddr)
 
 	httpSrv := &http.Server{

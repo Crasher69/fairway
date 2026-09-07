@@ -72,6 +72,7 @@ type observation struct {
 	throughput float64
 	status     int
 	failed     bool
+	reused     bool // соединение переиспользовано: connect не измерялся
 	at         time.Time
 }
 
@@ -98,7 +99,11 @@ func (s *Stats) add(o observation, banFor time.Duration) string {
 
 	s.consecutiveFails = 0
 	s.errorRate.Add(0)
-	s.connect.Add(float64(o.connect.Microseconds()) / 1000)
+	// На keep-alive соединении установки не было — ноль сюда добавлять нельзя,
+	// иначе среднее времени подключения уедет в пол.
+	if !o.reused {
+		s.connect.Add(float64(o.connect.Microseconds()) / 1000)
+	}
 	s.ttfb.Add(float64(o.ttfb.Microseconds()) / 1000)
 	if o.bytes >= throughputMinBytes && o.throughput > 0 {
 		s.throughput.Add(o.throughput)
@@ -147,11 +152,14 @@ func (s *Stats) Banned(now time.Time) (bool, time.Time, string) {
 	return false, time.Time{}, ""
 }
 
-// Samples — сколько успешных замеров задержки накоплено.
+// Samples — сколько успешных замеров накоплено.
+//
+// Считается по TTFB, а не по времени подключения: на keep-alive соединении
+// установки нет, и по connect прокси навсегда остался бы «непроверенным».
 func (s *Stats) Samples() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.connect.Count()
+	return s.ttfb.Count()
 }
 
 // Cost — ожидаемое время (в секундах) на отдачу эталонного ответа через этот
@@ -208,7 +216,7 @@ func (s *Stats) Snapshot() Snapshot {
 		TTFBMS:      s.ttfb.Value(),
 		Throughput:  s.throughput.Value(),
 		ErrorRate:   s.errorRate.Value(),
-		Samples:     s.connect.Count(),
+		Samples:     s.ttfb.Count(),
 		Requests:    s.requests,
 		Errors:      s.errors,
 		Bans:        s.bans,

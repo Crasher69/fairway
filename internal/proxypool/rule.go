@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"mitm/internal/config"
+	"fairway/internal/config"
 )
 
 // Rule — правило, применённое к конкретному домену: лимиты уже нормализованы

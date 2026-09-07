@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"mitm/internal/forward"
-	"mitm/internal/proxypool"
+	"fairway/internal/forward"
+	"fairway/internal/proxypool"
 )
 
 // DefaultEpsilon — доля запросов, уходящих на разведку вместо лучшего прокси.
@@ -125,6 +125,7 @@ func (r *Registry) Observe(sample forward.Sample) {
 		throughput: sample.Throughput(),
 		status:     sample.Status,
 		failed:     sample.Err != nil,
+		reused:     sample.Reused,
 		at:         now,
 	}, banFor)
 
