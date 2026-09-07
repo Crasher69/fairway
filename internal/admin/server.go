@@ -51,6 +51,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/config", s.config)
 	mux.HandleFunc("POST /api/config/reload", s.reload)
 	mux.HandleFunc("POST /api/proxies", s.addProxy)
+	mux.HandleFunc("POST /api/proxies/import", s.importProxies)
 	mux.HandleFunc("PUT /api/proxies/{name}", s.updateProxy)
 	mux.HandleFunc("DELETE /api/proxies/{name}", s.deleteProxy)
 	mux.HandleFunc("PUT /api/lists", s.saveList)

@@ -296,3 +296,64 @@ func without(list []string, name string) []string {
 	}
 	return out
 }
+
+// importProxies добавляет прокси списком. Отдельная ручка, а не цикл из
+// POST /api/proxies: полсотни отдельных запросов — это полсотни перезаписей
+// конфига, и на середине список может оказаться применён наполовину.
+func (s *Server) importProxies(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Text    string `json:"text"`
+		Scheme  string `json:"scheme"`
+		Prefix  string `json:"prefix"`
+		Country string `json:"country"`
+		Comment string `json:"comment"`
+		List    string `json:"list"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+
+	var result config.ImportResult
+	cfg, err := s.Editor.edit(func(cfg *config.Config) error {
+		result = cfg.ImportProxies(body.Text, body.Scheme, body.Prefix, body.Country, body.Comment)
+		if result.AddedN == 0 {
+			// Нечего добавлять — не переписываем файл на ровном месте,
+			// но и не считаем это ошибкой: разбор строк уже в result.
+			return errNothingImported
+		}
+		// Сразу положить импортированное в лист — иначе после импорта
+		// пришлось бы вручную отмечать полсотни галочек.
+		if body.List != "" {
+			names := make([]string, 0, len(result.Added))
+			for _, p := range result.Added {
+				names = append(names, p.Name)
+			}
+			for i, list := range cfg.Lists {
+				if list.Name == body.List {
+					cfg.Lists[i].Proxies = append(cfg.Lists[i].Proxies, names...)
+					return nil
+				}
+			}
+			cfg.Lists = append(cfg.Lists, config.List{Name: body.List, Proxies: names})
+		}
+		return nil
+	})
+
+	if err != nil && !errors.Is(err, errNothingImported) {
+		status := http.StatusBadRequest
+		if errors.Is(err, ErrNoEditor) {
+			status = http.StatusNotImplemented
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+
+	writeJSON(w, struct {
+		config.ImportResult
+		Config *config.Config `json:"config,omitempty"`
+	}{ImportResult: result, Config: cfg})
+}
+
+// errNothingImported прерывает правку, когда добавлять нечего: сохранять
+// и применять конфиг в этом случае незачем.
+var errNothingImported = errors.New("ни одной строки не разобрано")

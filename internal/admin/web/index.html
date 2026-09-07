@@ -106,7 +106,7 @@
       к домену. Файл: <code class="config-note">config.json</code></p>
 
     <div class="card">
-      <h2>Заведённые прокси</h2>
+      <div class="card-head"><h2>Заведённые прокси</h2><input class="filter" id="proxy-filter" type="search" placeholder="Поиск: имя, адрес, страна, комментарий"></div>
       <table id="cfg-proxies">
         <thead>
           <tr>
@@ -161,6 +161,43 @@
         </div>
       </form>
     </div>
+
+    <div class="card">
+      <h2>Импорт списком</h2>
+      <p class="hint">По одной строке на прокси. Понимает форматы
+        <code>1.2.3.4:1080</code>, <code>1.2.3.4:1080:логин:пароль</code>,
+        <code>логин:пароль@1.2.3.4:1080</code> и строку со схемой целиком.
+        Пустые строки и строки, начинающиеся с <code>#</code>, пропускаются.</p>
+      <form id="import-form">
+        <textarea name="text" rows="8" spellcheck="false"
+          placeholder="1.2.3.4:1080:bob:secret&#10;5.6.7.8:1080:bob:secret&#10;socks5://9.9.9.9:9050"></textarea>
+        <div class="fields">
+          <label class="field">схема по умолчанию
+            <select name="scheme">
+              <option value="http">http</option>
+              <option value="https">https</option>
+              <option value="socks5">socks5</option>
+            </select>
+          </label>
+          <label class="field">префикс имён
+            <input name="prefix" placeholder="proxy" size="10">
+          </label>
+          <label class="field">страна
+            <input name="country" placeholder="RU" size="5">
+          </label>
+          <label class="field field-wide">комментарий
+            <input name="comment" placeholder="общий для всей пачки">
+          </label>
+          <label class="field">сразу в лист
+            <select name="list" id="import-list-select"></select>
+          </label>
+        </div>
+        <div class="form-actions">
+          <button>Импортировать</button>
+        </div>
+      </form>
+      <div id="import-result" hidden></div>
+    </div>
   </div>
 
   <!-- Листы -->
@@ -175,7 +212,7 @@
       выбор по замерам.</p>
 
     <div class="card">
-      <h2>Листы</h2>
+      <div class="card-head"><h2>Листы</h2><input class="filter" id="list-filter" type="search" placeholder="Поиск: имя листа или прокси в нём"></div>
       <table id="cfg-lists">
         <thead><tr><th>Лист</th><th>Прокси</th><th class="num">Штук</th><th></th></tr></thead>
         <tbody></tbody>
@@ -195,6 +232,7 @@
           <span>Прокси в листе</span>
           <span class="count" id="members-count"></span>
           <span class="spacer"></span>
+          <input class="filter" id="members-filter" type="search" placeholder="Поиск">
           <button type="button" class="ghost" id="members-all">Выбрать все</button>
           <button type="button" class="ghost" id="members-none">Снять все</button>
         </div>
@@ -220,7 +258,7 @@
       <code>*.суффикс</code> → <code>*</code> → общие настройки.</p>
 
     <div class="card">
-      <h2>Правила</h2>
+      <div class="card-head"><h2>Правила</h2><input class="filter" id="rule-filter" type="search" placeholder="Поиск: паттерн или лист"></div>
       <table id="cfg-domains">
         <thead>
           <tr>

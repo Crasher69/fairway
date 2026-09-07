@@ -427,3 +427,82 @@ func TestAddProxyFromPastedURL(t *testing.T) {
 		t.Errorf("в файле осталась строка url: %q", saved.URL)
 	}
 }
+
+func TestImportProxiesEndpoint(t *testing.T) {
+	e := newEditable(t)
+
+	body := map[string]string{
+		"text":    "1.1.1.1:1080:bob:secret\n2.2.2.2:1080\n# комментарий\nмусор\nsocks5://3.3.3.3:9050",
+		"scheme":  "socks5",
+		"prefix":  "ru",
+		"country": "RU",
+		"comment": "пачка",
+		"list":    "импорт",
+	}
+	code, raw := send(t, "POST", e.url+"/api/proxies/import", body)
+	if code != http.StatusOK {
+		t.Fatalf("статус %d: %s", code, raw)
+	}
+
+	var result struct {
+		AddedN  int `json:"added_count"`
+		FailedN int `json:"failed_count"`
+		Failed  []struct {
+			Line   int    `json:"line"`
+			Text   string `json:"text"`
+			Reason string `json:"reason"`
+		} `json:"failed"`
+	}
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.AddedN != 3 || result.FailedN != 1 {
+		t.Errorf("добавлено %d, ошибок %d", result.AddedN, result.FailedN)
+	}
+	// Номер строки в отчёте — то, ради чего строится весь разбор: иначе
+	// человеку пришлось бы искать плохую строку в списке из полусотни.
+	if result.Failed[0].Line != 4 || result.Failed[0].Reason == "" {
+		t.Errorf("отчёт об ошибке: %+v", result.Failed[0])
+	}
+
+	disk := e.onDisk(t)
+	if len(disk.Proxies) != 5 { // два было в тестовом конфиге
+		t.Fatalf("на диске %d прокси", len(disk.Proxies))
+	}
+	// Импортированные должны сразу попасть в указанный лист.
+	var imported *config.List
+	for i := range disk.Lists {
+		if disk.Lists[i].Name == "импорт" {
+			imported = &disk.Lists[i]
+		}
+	}
+	if imported == nil || len(imported.Proxies) != 3 {
+		t.Fatalf("лист после импорта: %+v", imported)
+	}
+	first := disk.Proxies[2]
+	if first.Name != "ru-1" || first.Country != "RU" || first.Comment != "пачка" {
+		t.Errorf("первый импортированный: %+v", first)
+	}
+}
+
+// TestImportNothingKeepsConfig — если ни одна строка не разобралась,
+// конфиг переписывать незачем, но отчёт человек получить должен.
+func TestImportNothingKeepsConfig(t *testing.T) {
+	e := newEditable(t)
+	before := e.applied
+
+	code, raw := send(t, "POST", e.url+"/api/proxies/import",
+		map[string]string{"text": "совсем не прокси\nи это тоже"})
+	if code != http.StatusOK {
+		t.Fatalf("статус %d: %s", code, raw)
+	}
+	if !strings.Contains(raw, `"failed_count": 2`) {
+		t.Errorf("в ответе нет отчёта об ошибках: %s", raw)
+	}
+	if e.applied != before {
+		t.Error("конфиг применён, хотя добавлять было нечего")
+	}
+	if disk := e.onDisk(t); len(disk.Proxies) != 2 {
+		t.Errorf("состав прокси изменился: %d", len(disk.Proxies))
+	}
+}

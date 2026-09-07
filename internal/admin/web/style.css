@@ -404,3 +404,47 @@ button:disabled {
 button:disabled:hover { background: #263248; }
 button.ghost.danger { background: none; border-color: #5a2b2d; color: #ffb3b5; }
 button.ghost.danger:hover { background: #3a2224; }
+
+/* --- поиск и импорт --- */
+
+.card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.card-head h2 { margin: 0; }
+.card-head .filter { margin-left: auto; }
+
+.filter {
+  min-width: 240px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.members-head .filter { min-width: 160px; }
+
+textarea {
+  width: 100%;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  margin-bottom: 12px;
+}
+
+#import-result { margin-top: 14px; font-size: 13px; }
+.import-ok { color: var(--ok); margin: 0 0 8px; }
+.import-warn { color: var(--warn); margin: 0 0 8px; }
+
+.import-issue {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 4px 0;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.import-issue code { font-family: var(--mono); color: var(--text); }

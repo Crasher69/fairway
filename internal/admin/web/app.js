@@ -385,6 +385,30 @@ let settings = { proxies: [], lists: [], domains: [], defaults: {} };
 // Что сейчас редактируется. null — форма в режиме добавления.
 const editing = { proxy: null, list: null, rule: null };
 
+// Строки поиска по таблицам. Когда прокси станет полсотни, глазами их
+// не найти, а листать длинную таблицу бессмысленно.
+const filters = { proxy: '', list: '', rule: '', members: '' };
+
+// matches ищет подстроку без учёта регистра по всем переданным полям.
+function matches(needle, ...fields) {
+  if (!needle) return true;
+  const query = needle.trim().toLowerCase();
+  return fields.some((f) => String(f ?? '').toLowerCase().includes(query));
+}
+
+function bindFilter(id, key, rerender) {
+  const input = $(id);
+  input.oninput = () => {
+    filters[key] = input.value;
+    rerender();
+  };
+}
+
+bindFilter('proxy-filter', 'proxy', () => renderProxyTable());
+bindFilter('list-filter', 'list', () => renderListTable());
+bindFilter('rule-filter', 'rule', () => renderRuleTable());
+bindFilter('members-filter', 'members', () => renderListMembers(selectedMembers()));
+
 const number = (value) => (value === '' ? 0 : Number(value));
 
 async function send(method, path, body) {
@@ -470,7 +494,13 @@ function renderProxyTable() {
     body.replaceChildren(emptyRow(8, 'Прокси пока нет'));
     return;
   }
-  body.replaceChildren(...settings.proxies.map((p) => {
+  const shown = settings.proxies.filter((p) =>
+    matches(filters.proxy, p.name, p.host, p.country, p.comment, p.login, p.port));
+  if (!shown.length) {
+    body.replaceChildren(emptyRow(8, 'Под поиск ничего не подошло'));
+    return;
+  }
+  body.replaceChildren(...shown.map((p) => {
     const tr = document.createElement('tr');
     const name = textCell(p.name);
     name.className = 'name';
@@ -554,7 +584,12 @@ function renderListTable() {
     body.replaceChildren(emptyRow(4, 'Листов пока нет'));
     return;
   }
-  body.replaceChildren(...settings.lists.map((l) => {
+  const shown = settings.lists.filter((l) => matches(filters.list, l.name, (l.proxies || []).join(' ')));
+  if (!shown.length) {
+    body.replaceChildren(emptyRow(4, 'Под поиск ничего не подошло'));
+    return;
+  }
+  body.replaceChildren(...shown.map((l) => {
     const tr = document.createElement('tr');
     const name = textCell(l.name);
     name.className = 'name';
@@ -586,7 +621,17 @@ function renderListMembers(selected) {
     return;
   }
 
-  box.replaceChildren(...settings.proxies.map((p) => {
+  const shown = settings.proxies.filter((p) =>
+    chosen.has(p.name) || matches(filters.members, p.name, p.host, p.country, p.comment));
+  if (!shown.length) {
+    const note = document.createElement('div');
+    note.className = 'empty-note';
+    note.textContent = 'Под поиск ничего не подошло.';
+    box.replaceChildren(note);
+    updateMembersCount();
+    return;
+  }
+  box.replaceChildren(...shown.map((p) => {
     const row = document.createElement('label');
     row.className = 'member';
 
@@ -636,9 +681,12 @@ function selectedMembers() {
 }
 
 function updateMembersCount() {
-  const all = memberInputs();
-  const picked = all.filter((input) => input.checked).length;
-  $('members-count').textContent = all.length ? `выбрано ${picked} из ${all.length}` : '';
+  const picked = memberInputs().filter((input) => input.checked).length;
+  const total = settings.proxies.length;
+  const visible = memberInputs().length;
+  let text = total ? `выбрано ${picked} из ${total}` : '';
+  if (filters.members && visible !== total) text += ` · показано ${visible}`;
+  $('members-count').textContent = text;
 }
 
 function setAllMembers(checked) {
@@ -694,7 +742,12 @@ function renderRuleTable() {
     body.replaceChildren(emptyRow(7, 'Правил пока нет — все домены идут по общим настройкам'));
     return;
   }
-  body.replaceChildren(...settings.domains.map((d) => {
+  const shown = settings.domains.filter((d) => matches(filters.rule, d.pattern, d.list));
+  if (!shown.length) {
+    body.replaceChildren(emptyRow(7, 'Под поиск ничего не подошло'));
+    return;
+  }
+  body.replaceChildren(...shown.map((d) => {
     const tr = document.createElement('tr');
     const pattern = textCell(d.pattern);
     pattern.className = 'name';
@@ -771,6 +824,14 @@ function fillListSelects() {
   ruleSelect.replaceChildren(...names.map((name) => new Option(name, name)));
   if (names.includes(rulePrevious)) ruleSelect.value = rulePrevious;
 
+  const importSelect = $('import-list-select');
+  const importPrevious = importSelect.value;
+  importSelect.replaceChildren(
+    new Option('— не класть в лист —', ''),
+    ...names.map((name) => new Option(name, name)),
+  );
+  if (names.includes(importPrevious)) importSelect.value = importPrevious;
+
   const defaultsSelect = $('defaults-list-select');
   const defaultsPrevious = defaultsSelect.value;
   defaultsSelect.replaceChildren(
@@ -844,3 +905,56 @@ $('cert-uninstall').onclick = () => {
   if (!confirm('Удалить корневой сертификат Fairway из доверенных на этой машине?')) return;
   certAction('api/ca/uninstall');
 };
+
+// --- импорт прокси списком ---
+
+$('import-form').onsubmit = (event) => {
+  event.preventDefault();
+  const form = event.target;
+  const body = {
+    text: form.text.value,
+    scheme: form.scheme.value,
+    prefix: form.prefix.value.trim(),
+    country: form.country.value.trim(),
+    comment: form.comment.value.trim(),
+    list: form.list.value,
+  };
+  $('config-error').hidden = true;
+  send('POST', 'api/proxies/import', body)
+    .then((result) => {
+      renderImportResult(result);
+      if (result.added_count) form.text.value = '';
+      return refreshSettings();
+    })
+    .catch(showConfigError);
+};
+
+// Разбор построчный, поэтому и отчёт построчный: «добавлено 47 из 50»
+// заставило бы искать три плохие строки глазами.
+function renderImportResult(result) {
+  const box = $('import-result');
+  box.hidden = false;
+  box.replaceChildren();
+
+  const summary = document.createElement('p');
+  summary.className = result.failed_count ? 'import-warn' : 'import-ok';
+  summary.textContent = `Добавлено ${result.added_count}` +
+    (result.skipped_count ? `, пропущено дубликатов ${result.skipped_count}` : '') +
+    (result.failed_count ? `, не разобрано ${result.failed_count}` : '');
+  box.append(summary);
+
+  for (const issue of [...(result.failed || []), ...(result.skipped || [])]) {
+    const line = document.createElement('div');
+    line.className = 'import-issue';
+    const number = document.createElement('span');
+    number.className = 'muted';
+    number.textContent = 'строка ' + issue.line;
+    const text = document.createElement('code');
+    text.textContent = issue.text;
+    const reason = document.createElement('span');
+    reason.className = 'muted';
+    reason.textContent = '— ' + issue.reason;
+    line.append(number, text, reason);
+    box.append(line);
+  }
+}
