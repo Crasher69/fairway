@@ -10,9 +10,9 @@
 Проверка: браузер с прокси `127.0.0.1:8080` открывает сайты через апстрим.
 
 ## 2. Конфиг и пулы
-- [ ] `internal/config`: JSON — proxies, lists, domains; валидация; hot-reload
-- [ ] `internal/proxypool`: реестр, привязка домен → лист, семафор `max_parallel`
-- [ ] выбор прокси: сначала round-robin (заглушка под будущий рейтинг)
+- [x] `internal/config`: JSON — proxies, lists, domains; валидация; hot-reload
+- [x] `internal/proxypool`: реестр, привязка домен → лист, лимиты параллелизма
+- [x] выбор прокси: round-robin за интерфейсом `Selector` (заглушка под рейтинг)
 
 ## 3. Рейтинг
 - [ ] EWMA по (домен, прокси): connect, TTFB, throughput, error rate

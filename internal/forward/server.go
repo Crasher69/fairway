@@ -18,9 +18,9 @@ import (
 // HTTPS на этом этапе только туннелируется (CONNECT); расшифровка появится
 // на этапе 4 вместе с MITM.
 type Server struct {
-	// Pick выбирает апстрим для домена. Обязателен. Возврат nil означает
+	// Pick выбирает маршрут для домена. Обязателен. Ошибка означает
 	// «нет живого прокси» — клиент получит 503.
-	Pick func(domain string) *Upstream
+	Pick func(domain string) (*Route, error)
 	// Observe вызывается по завершении каждого запроса. Может быть nil.
 	Observe func(Sample)
 	// DialTimeout ограничивает установку соединения с целью через апстрим.
@@ -48,12 +48,14 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	sample := Sample{Domain: hostOnly(target)}
 	started := time.Now()
 
-	up := s.Pick(sample.Domain)
-	if up == nil {
-		http.Error(w, "нет доступного апстрима для "+sample.Domain, http.StatusServiceUnavailable)
+	route, err := s.Pick(sample.Domain)
+	if err != nil {
+		http.Error(w, "нет доступного апстрима: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	sample.Upstream = up.Name
+	defer route.release()
+	up := route.Upstream
+	sample.Upstream = route.Name
 
 	ctx, cancel := context.WithTimeout(r.Context(), s.dialTimeout())
 	defer cancel()
@@ -119,19 +121,20 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	sample := Sample{Domain: hostOnly(r.Host)}
 	started := time.Now()
 
-	up := s.Pick(sample.Domain)
-	if up == nil {
-		http.Error(w, "нет доступного апстрима для "+sample.Domain, http.StatusServiceUnavailable)
+	route, err := s.Pick(sample.Domain)
+	if err != nil {
+		http.Error(w, "нет доступного апстрима: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	sample.Upstream = up.Name
+	defer route.release()
+	up := route.Upstream
+	sample.Upstream = route.Name
 
 	ctx, cancel := context.WithTimeout(r.Context(), s.dialTimeout())
 	defer cancel()
 
 	var (
 		conn        net.Conn
-		err         error
 		absoluteURI = up.IsHTTPProxy()
 	)
 	dialStart := time.Now()

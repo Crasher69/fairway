@@ -67,7 +67,7 @@ func TestServeHTTPThroughDirect(t *testing.T) {
 		samples []Sample
 	)
 	proxySrv := httptest.NewServer(&Server{
-		Pick: func(string) *Upstream { return direct },
+		Pick: func(string) (*Route, error) { return &Route{Upstream: direct, Name: direct.Name}, nil },
 		Observe: func(s Sample) {
 			mu.Lock()
 			samples = append(samples, s)
@@ -146,7 +146,7 @@ func TestConnectTunnelThroughDirect(t *testing.T) {
 	// не дожидается обработчика — ждём замер через канал.
 	samples := make(chan Sample, 1)
 	proxySrv := httptest.NewServer(&Server{
-		Pick:    func(string) *Upstream { return direct },
+		Pick:    func(string) (*Route, error) { return &Route{Upstream: direct, Name: direct.Name}, nil },
 		Observe: func(s Sample) { samples <- s },
 	})
 	defer proxySrv.Close()
