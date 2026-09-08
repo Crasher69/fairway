@@ -32,10 +32,19 @@ type Server struct {
 	OriginTLS *tls.Config
 	// DialTimeout ограничивает установку соединения с целью через апстрим.
 	DialTimeout time.Duration
-	Logger      *log.Logger
+	// ReplayBodyLimit — до какого размера тело запроса в режиме MITM
+	// буферизуется в памяти, чтобы запрос можно было повторить, если цель
+	// закрыла keep-alive соединение. 0 означает DefaultReplayBodyLimit,
+	// отрицательное — не буферизовать (повторяются только запросы без тела).
+	ReplayBodyLimit int64
+	Logger          *log.Logger
 }
 
 const defaultDialTimeout = 15 * time.Second
+
+// DefaultReplayBodyLimit — 1 МиБ: покрывает формы, JSON и мелкие загрузки,
+// а большой файл держать в памяти ради редкого повтора незачем.
+const DefaultReplayBodyLimit = 1 << 20
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodConnect {

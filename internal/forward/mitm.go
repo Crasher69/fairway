@@ -2,6 +2,7 @@ package forward
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"io"
@@ -89,8 +90,14 @@ func (s *Server) roundTrip(up *mitmUpstream, client io.Writer, req *http.Request
 	req.RequestURI = ""
 	removeHopByHop(req.Header)
 
-	// Повторить можно только запрос без тела: перечитать тело нельзя.
-	retriable := req.Body == nil || req.ContentLength == 0
+	// Тело до лимита читается в память: иначе повторить запрос нельзя,
+	// а keep-alive соединение к цели умирает как раз в паузе между
+	// запросами — и первый POST после паузы получал бы 502.
+	rewind, err := bufferBody(req, s.replayBodyLimit())
+	if err != nil {
+		return s.fail(sample, started, client, err, up)
+	}
+	retriable := rewind != nil
 
 	conn, connect, fresh, err := up.connection()
 	sample.Connect = connect
@@ -99,16 +106,19 @@ func (s *Server) roundTrip(up *mitmUpstream, client io.Writer, req *http.Request
 		return s.fail(sample, started, client, err, up)
 	}
 
-	resp, ttfb, err := exchange(conn, req)
-	if err != nil && retriable && !fresh {
+	resp, ttfb, received, err := exchange(conn, req)
+	if err != nil && retriable && !fresh && !received {
 		// Цель могла закрыть keep-alive соединение, пока оно простаивало, —
-		// это штатная ситуация, а не отказ прокси.
+		// это штатная ситуация, а не отказ прокси. Повторяем только если от
+		// цели не пришло ни байта: получив хотя бы начало ответа, нельзя
+		// знать, выполнила ли она запрос, а повторять POST вслепую опасно.
 		up.close()
 		conn, connect, fresh, err = up.connection()
 		sample.Connect = connect
 		sample.Reused = false
 		if err == nil {
-			resp, ttfb, err = exchange(conn, req)
+			rewind()
+			resp, ttfb, _, err = exchange(conn, req)
 		}
 	}
 	if err != nil {
@@ -142,22 +152,65 @@ func (s *Server) fail(sample Sample, started time.Time, client io.Writer, err er
 	return sample
 }
 
+// bufferBody вычитывает тело запроса в память, если оно не больше limit,
+// и возвращает функцию, которая подставляет его заново перед повтором.
+// nil означает «повторять нельзя»: тело слишком большое и уходит потоком.
+// Запрос без тела повторяем всегда — перематывать там нечего.
+func bufferBody(req *http.Request, limit int64) (rewind func(), err error) {
+	// Пустое тело распознаём по самому телу, а не по длине: у запроса,
+	// собранного клиентом, нулевая длина при живом Body значит «неизвестно».
+	if req.Body == nil || req.Body == http.NoBody {
+		return func() {}, nil
+	}
+	if limit < 0 || req.ContentLength > limit {
+		return nil, nil
+	}
+	// Читаем на байт больше лимита: так видно, что тело неизвестной длины
+	// (chunked) в лимит не влезло, не дочитывая его целиком.
+	buf, err := io.ReadAll(io.LimitReader(req.Body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(buf)) > limit {
+		// Не влезло: то, что уже прочитали, отдаём вперёд остатка потока.
+		req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), req.Body))
+		return nil, nil
+	}
+	req.Body.Close()
+	// Тело известной длины пишется с Content-Length, а не chunked: цели
+	// так проще, а нам — единообразнее при повторе.
+	req.ContentLength = int64(len(buf))
+	req.TransferEncoding = nil
+	rewind = func() { req.Body = io.NopCloser(bytes.NewReader(buf)) }
+	rewind()
+	return rewind, nil
+}
+
+func (s *Server) replayBodyLimit() int64 {
+	if s.ReplayBodyLimit == 0 {
+		return DefaultReplayBodyLimit
+	}
+	return s.ReplayBodyLimit
+}
+
 // exchange отправляет запрос и читает ответ, замеряя время до первого байта.
-func exchange(conn net.Conn, req *http.Request) (*http.Response, time.Duration, error) {
+// received сообщает, пришёл ли от цели хотя бы один байт: по нему решается,
+// можно ли повторять запрос после ошибки.
+func exchange(conn net.Conn, req *http.Request) (resp *http.Response, ttfb time.Duration, received bool, err error) {
 	sent := time.Now()
 	if err := req.Write(conn); err != nil {
-		return nil, 0, err
+		return nil, 0, false, err
 	}
 	watcher := &firstByteWatcher{r: conn}
-	resp, err := http.ReadResponse(bufio.NewReader(watcher), req)
+	resp, err = http.ReadResponse(bufio.NewReader(watcher), req)
+	received = !watcher.first.IsZero()
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, received, err
 	}
-	var ttfb time.Duration
-	if !watcher.first.IsZero() {
+	if received {
 		ttfb = watcher.first.Sub(sent)
 	}
-	return resp, ttfb, nil
+	return resp, ttfb, received, nil
 }
 
 // mitmUpstream держит одно TLS-соединение до цели через выбранный апстрим.

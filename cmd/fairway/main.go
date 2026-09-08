@@ -51,6 +51,7 @@ func main() {
 		configPath     = flag.String("config", "config.json", "файл конфигурации; создаётся, если его нет")
 		dataDir        = flag.String("data", "./data", "каталог для CA и снапшотов рейтингов")
 		dialTimeout    = flag.Duration("dial-timeout", 15*time.Second, "таймаут подключения к цели через апстрим")
+		replayBody     = flag.Int64("replay-body", forward.DefaultReplayBodyLimit, "до какого размера (байт) буферизовать тело запроса в MITM ради повтора; -1 — не буферизовать")
 		pollInterval   = flag.Duration("config-poll", config.DefaultPollInterval, "как часто перечитывать конфиг")
 		ratingSave     = flag.Duration("ratings-save", 30*time.Second, "как часто сохранять рейтинги на диск")
 		exportCA       = flag.String("export-ca", "", "сохранить корневой сертификат в указанный файл и выйти")
@@ -116,10 +117,11 @@ func main() {
 	recorder := stats.New(*historySize)
 
 	srv := &forward.Server{
-		Pick:        router(pool),
-		Issuer:      issuer,
-		DialTimeout: *dialTimeout,
-		Logger:      logger,
+		Pick:            router(pool),
+		Issuer:          issuer,
+		DialTimeout:     *dialTimeout,
+		ReplayBodyLimit: *replayBody,
+		Logger:          logger,
 		Observe: func(s forward.Sample) {
 			ratings.Observe(s)
 			recorder.Observe(s)

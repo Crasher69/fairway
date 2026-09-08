@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,7 +32,13 @@ func newMITMHarness(t *testing.T, handler http.HandlerFunc) *mitmHarness {
 	h := &mitmHarness{}
 	h.target = httptest.NewTLSServer(handler)
 	t.Cleanup(h.target.Close)
+	h.wire(t)
+	return h
+}
 
+// wire поднимает прокси с расшифровкой и клиента вокруг уже запущенной цели.
+func (h *mitmHarness) wire(t *testing.T) {
+	t.Helper()
 	ca, err := mitmca.LoadOrCreate(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +77,6 @@ func newMITMHarness(t *testing.T, handler http.HandlerFunc) *mitmHarness {
 		Proxy:           http.ProxyURL(proxyURL),
 		TLSClientConfig: &tls.Config{RootCAs: ourRoots},
 	}}
-	return h
 }
 
 func (h *mitmHarness) taken() []Sample {
@@ -243,4 +249,141 @@ func waitFor(t *testing.T, limit time.Duration, msg string, cond func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Error(msg)
+}
+
+// newIdleClosingHarness — цель, которая закрывает простаивающее keep-alive
+// соединение очень быстро и молча, как это делают реальные сайты и
+// балансировщики перед ними. Первый запрос после паузы попадает в мёртвое
+// соединение.
+func newIdleClosingHarness(t *testing.T, handler http.HandlerFunc) *mitmHarness {
+	t.Helper()
+	h := &mitmHarness{}
+	h.target = httptest.NewUnstartedServer(handler)
+	h.target.Config.IdleTimeout = 50 * time.Millisecond
+	h.target.StartTLS()
+	t.Cleanup(h.target.Close)
+	h.wire(t)
+	return h
+}
+
+// TestMITMReplaysPostAfterIdleClose — раньше повторялись только запросы
+// без тела, и первый POST после паузы получал 502 на ровном месте.
+func TestMITMReplaysPostAfterIdleClose(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []string
+	h := newIdleClosingHarness(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, r.Method+":"+string(body))
+		mu.Unlock()
+		io.WriteString(w, "ок")
+	})
+
+	// Первый запрос открывает keep-alive соединение прокси → цель.
+	resp, err := h.client.Get(h.target.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	// Цель закрывает простаивающее соединение, прокси об этом не знает.
+	time.Sleep(200 * time.Millisecond)
+
+	// Тело неизвестной длины: клиент шлёт его chunked. Буферизация должна
+	// справиться и с этим, а до цели оно должно дойти ровно один раз.
+	resp, err = h.client.Post(h.target.URL+"/submit", "text/plain", io.MultiReader(strings.NewReader("платёж №"), strings.NewReader("42")))
+	if err != nil {
+		t.Fatalf("POST после паузы: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST после паузы: статус %d, ожидался 200 через повтор на новом соединении", resp.StatusCode)
+	}
+
+	mu.Lock()
+	got := append([]string(nil), bodies...)
+	mu.Unlock()
+	if len(got) != 2 || got[1] != "POST:платёж №42" {
+		t.Errorf("до цели дошло %v, ожидался один GET и один POST с телом целиком", got)
+	}
+
+	samples := h.waitSamples(t, 2)
+	if s := samples[1]; s.Err != nil || s.Reused || s.Connect <= 0 {
+		t.Errorf("замер повторённого POST: err=%v reused=%v connect=%s — ожидалось новое соединение без ошибки", s.Err, s.Reused, s.Connect)
+	}
+}
+
+// TestMITMDoesNotReplayLargeBody — тело больше лимита уходит потоком и не
+// повторяется: держать мегабайты в памяти ради редкого повтора незачем.
+func TestMITMDoesNotReplayLargeBody(t *testing.T) {
+	var calls int32
+	h := newIdleClosingHarness(t, func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		atomic.AddInt32(&calls, 1)
+		io.WriteString(w, "ок")
+	})
+	h.proxy.Config.Handler.(*Server).ReplayBodyLimit = 16
+
+	resp, err := h.client.Get(h.target.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	time.Sleep(200 * time.Millisecond)
+
+	resp, err = h.client.Post(h.target.URL+"/upload", "text/plain", strings.NewReader(strings.Repeat("x", 1000)))
+	if err == nil {
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadGateway {
+			t.Fatalf("большой POST в мёртвое соединение: статус %d, ожидался 502 — повторять такое тело нельзя", resp.StatusCode)
+		}
+	}
+	if atomic.LoadInt32(&calls) != 1 {
+		t.Errorf("цель получила %d запросов, большой POST не должен был повторяться", calls)
+	}
+}
+
+func TestBufferBody(t *testing.T) {
+	// Без тела — повторяем, ничего не читая.
+	req, _ := http.NewRequest("GET", "https://example.com/", nil)
+	if rewind, err := bufferBody(req, 10); err != nil || rewind == nil {
+		t.Errorf("GET без тела: rewind=%t err=%v", rewind != nil, err)
+	}
+
+	// Влезает: буферизуется, перематывается, длина проставлена.
+	req, _ = http.NewRequest("POST", "https://example.com/", strings.NewReader("abc"))
+	rewind, err := bufferBody(req, 10)
+	if err != nil || rewind == nil {
+		t.Fatalf("POST 3 байта при лимите 10: rewind=%t err=%v", rewind != nil, err)
+	}
+	first, _ := io.ReadAll(req.Body)
+	rewind()
+	second, _ := io.ReadAll(req.Body)
+	if string(first) != "abc" || string(second) != "abc" || req.ContentLength != 3 {
+		t.Errorf("после перемотки тело %q/%q, длина %d", first, second, req.ContentLength)
+	}
+
+	// Chunked тело (длина неизвестна) тоже влезает и становится известным.
+	req, _ = http.NewRequest("POST", "https://example.com/", io.MultiReader(strings.NewReader("ab"), strings.NewReader("c")))
+	if rewind, err := bufferBody(req, 10); err != nil || rewind == nil || req.ContentLength != 3 {
+		t.Errorf("chunked 3 байта: rewind=%t err=%v длина=%d", rewind != nil, err, req.ContentLength)
+	}
+
+	// Не влезает: не повторяется, но тело доходит целиком.
+	req, _ = http.NewRequest("POST", "https://example.com/", io.MultiReader(strings.NewReader("abcdef"), strings.NewReader("ghijkl")))
+	rewind, err = bufferBody(req, 4)
+	if err != nil || rewind != nil {
+		t.Fatalf("12 байт при лимите 4: rewind=%t err=%v", rewind != nil, err)
+	}
+	if body, _ := io.ReadAll(req.Body); string(body) != "abcdefghijkl" {
+		t.Errorf("тело сверх лимита дошло не целиком: %q", body)
+	}
+
+	// Отрицательный лимит выключает буферизацию.
+	req, _ = http.NewRequest("POST", "https://example.com/", strings.NewReader("abc"))
+	if rewind, _ := bufferBody(req, -1); rewind != nil {
+		t.Error("при отрицательном лимите тело не должно буферизоваться")
+	}
 }
