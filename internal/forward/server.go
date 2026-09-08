@@ -3,7 +3,6 @@
 package forward
 
 import (
-	"bufio"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -11,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"strings"
 	"time"
 )
@@ -152,66 +152,56 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer route.release()
-	up := route.Upstream
 	sample.Upstream = route.Name
 
-	ctx, cancel := context.WithTimeout(r.Context(), s.dialTimeout())
-	defer cancel()
-
+	// Запрос идёт через пул keep-alive соединений апстрима. Замеры снимаются
+	// трассировкой: она одна знает, было ли соединение установлено заново
+	// или взято из пула, и когда пришёл первый байт ответа.
 	var (
-		conn        net.Conn
-		absoluteURI = up.IsHTTPProxy()
+		dialStart, gotConn, firstByte time.Time
+		reused                        bool
 	)
-	dialStart := time.Now()
-	if absoluteURI {
-		conn, err = up.DialProxy(ctx)
-	} else {
-		conn, err = up.DialTarget(ctx, targetAddr(r))
+	trace := &httptrace.ClientTrace{
+		ConnectStart: func(_, _ string) {
+			if dialStart.IsZero() {
+				dialStart = time.Now()
+			}
+		},
+		GotConn: func(info httptrace.GotConnInfo) {
+			gotConn = time.Now()
+			reused = info.Reused
+		},
+		GotFirstResponseByte: func() { firstByte = time.Now() },
 	}
-	sample.Connect = time.Since(dialStart)
+	outReq := r.Clone(httptrace.WithClientTrace(r.Context(), trace))
+	outReq.RequestURI = ""
+	removeHopByHop(outReq.Header)
+
+	resp, err := route.Upstream.Transport(s.dialTimeout()).RoundTrip(outReq)
+	finishConnect := func() {
+		sample.Reused = reused
+		if !reused && !dialStart.IsZero() {
+			end := gotConn
+			if end.IsZero() {
+				end = time.Now()
+			}
+			sample.Connect = end.Sub(dialStart)
+		}
+	}
 	if err != nil {
+		finishConnect()
 		sample.Err = err
 		sample.Duration = time.Since(started)
 		s.observe(sample)
 		http.Error(w, "апстрим недоступен: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	defer conn.Close()
-	connected := time.Now()
-
-	outReq := r.Clone(ctx)
-	removeHopByHop(outReq.Header)
-	// Keep-alive к апстриму появится вместе с пулом соединений на этапе 2.
-	outReq.Header.Set("Connection", "close")
-	outReq.Close = true
-	if auth := up.ProxyAuthorization(); absoluteURI && auth != "" {
-		outReq.Header.Set("Proxy-Authorization", auth)
-	}
-
-	counted := &countingConn{Conn: conn}
-	if absoluteURI {
-		err = outReq.WriteProxy(conn)
-	} else {
-		err = outReq.Write(conn)
-	}
-	if err != nil {
-		sample.Err = err
-		sample.Duration = time.Since(started)
-		s.observe(sample)
-		http.Error(w, "не удалось отправить запрос: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-
-	resp, err := http.ReadResponse(bufio.NewReader(counted), outReq)
-	if err != nil {
-		sample.Err = err
-		sample.Duration = time.Since(started)
-		s.observe(sample)
-		http.Error(w, "апстрим не ответил: "+err.Error(), http.StatusBadGateway)
-		return
-	}
 	defer resp.Body.Close()
+	finishConnect()
 	sample.Status = resp.StatusCode
+	if !firstByte.IsZero() && !gotConn.IsZero() {
+		sample.TTFB = firstByte.Sub(gotConn)
+	}
 
 	respHeader := w.Header()
 	for k, vv := range resp.Header {
@@ -221,15 +211,11 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	removeHopByHop(respHeader)
 	w.WriteHeader(resp.StatusCode)
-	if _, err := io.Copy(w, resp.Body); err != nil && !errors.Is(err, io.EOF) {
+	counted := &countingReader{r: resp.Body}
+	if _, err := io.Copy(w, counted); err != nil && !errors.Is(err, io.EOF) {
 		sample.Err = err
 	}
-
-	first, n := counted.stats()
-	if !first.IsZero() {
-		sample.TTFB = first.Sub(connected)
-	}
-	sample.Bytes = n
+	sample.Bytes = counted.n
 	sample.Duration = time.Since(started)
 	s.observe(sample)
 }
@@ -259,18 +245,6 @@ func hostOnly(hostport string) string {
 		return host
 	}
 	return hostport
-}
-
-// targetAddr возвращает host:port цели запроса, подставляя порт по схеме.
-func targetAddr(r *http.Request) string {
-	host := r.URL.Host
-	if _, _, err := net.SplitHostPort(host); err == nil {
-		return host
-	}
-	if r.URL.Scheme == "https" {
-		return net.JoinHostPort(host, "443")
-	}
-	return net.JoinHostPort(host, "80")
 }
 
 // hopByHop — заголовки одного участка соединения, их нельзя пересылать дальше.

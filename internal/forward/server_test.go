@@ -208,3 +208,105 @@ func mustHost(t *testing.T, rawURL string) string {
 	}
 	return u.Host
 }
+
+// TestHTTPReusesUpstreamConnection — обычный HTTP идёт через пул: второй
+// запрос должен уйти по тому же соединению, и connect в нём не измеряется.
+func TestHTTPReusesUpstreamConnection(t *testing.T) {
+	var mu sync.Mutex
+	remotes := map[string]int{}
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		remotes[r.RemoteAddr]++
+		mu.Unlock()
+		io.WriteString(w, "ок")
+	}))
+	defer target.Close()
+
+	direct, _ := ParseUpstream("direct")
+	var samples []Sample
+	proxySrv := httptest.NewServer(&Server{
+		Pick: func(string) (*Route, error) { return &Route{Upstream: direct, Name: direct.Name}, nil },
+		Observe: func(s Sample) {
+			mu.Lock()
+			samples = append(samples, s)
+			mu.Unlock()
+		},
+	})
+	defer proxySrv.Close()
+
+	proxyURL, _ := url.Parse(proxySrv.URL)
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+	for i := 0; i < 3; i++ {
+		resp, err := client.Get(target.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(remotes) != 1 {
+		t.Errorf("цель видела %d разных соединений от прокси, ожидалось одно (keep-alive)", len(remotes))
+	}
+	if len(samples) != 3 {
+		t.Fatalf("замеров %d, ожидалось 3", len(samples))
+	}
+	if samples[0].Reused {
+		t.Errorf("первый запрос: reused=%v connect=%s — ожидалось новое соединение", samples[0].Reused, samples[0].Connect)
+	}
+	for i, s := range samples[1:] {
+		if !s.Reused || s.Connect != 0 {
+			t.Errorf("запрос %d: reused=%v connect=%s — ожидалось переиспользование без замера connect", i+2, s.Reused, s.Connect)
+		}
+		if s.Status != http.StatusOK || s.Err != nil {
+			t.Errorf("запрос %d: статус %d, ошибка %v", i+2, s.Status, s.Err)
+		}
+	}
+}
+
+// TestHTTPThroughHTTPProxyUpstream — через http-апстрим запрос уходит в
+// absolute-form с Proxy-Authorization; вторым прокси служит ещё один
+// экземпляр Server в режиме direct.
+func TestHTTPThroughHTTPProxyUpstream(t *testing.T) {
+	var gotAuth string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "цель")
+	}))
+	defer target.Close()
+
+	direct, _ := ParseUpstream("direct")
+	upstreamProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Proxy-Authorization")
+		if !r.URL.IsAbs() {
+			t.Errorf("до апстрима дошёл запрос не в absolute-form: %s", r.RequestURI)
+		}
+		(&Server{Pick: func(string) (*Route, error) { return &Route{Upstream: direct, Name: "direct"}, nil }}).ServeHTTP(w, r)
+	}))
+	defer upstreamProxy.Close()
+
+	up, err := ParseUpstream("http://bob:secret@" + mustHost(t, upstreamProxy.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxySrv := httptest.NewServer(&Server{
+		Pick: func(string) (*Route, error) { return &Route{Upstream: up, Name: "up"}, nil },
+	})
+	defer proxySrv.Close()
+
+	proxyURL, _ := url.Parse(proxySrv.URL)
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+	resp, err := client.Get(target.URL + "/путь")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(body) != "цель" {
+		t.Errorf("тело %q", body)
+	}
+	if gotAuth != up.ProxyAuthorization() {
+		t.Errorf("Proxy-Authorization до апстрима: %q, ожидалось %q", gotAuth, up.ProxyAuthorization())
+	}
+}

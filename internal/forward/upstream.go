@@ -3,6 +3,7 @@ package forward
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/net/proxy"
@@ -23,6 +25,62 @@ type Upstream struct {
 	Addr   string // host:port самого прокси; пусто для direct
 	User   string
 	Pass   string
+
+	// transport — пул keep-alive соединений для обычного HTTP. Создаётся
+	// при первом запросе и живёт вместе с апстримом.
+	transportOnce sync.Once
+	transport     *http.Transport
+}
+
+// Transport отдаёт пул соединений для обычных HTTP-запросов через этот
+// апстрим. Один на апстрим: соединения к http-прокси переиспользуются между
+// всеми целями, к socks5 и direct — по адресу цели, как в любом браузере.
+//
+// Раньше на каждый запрос открывалось новое соединение с Connection: close,
+// и обычный HTTP работал в 14 раз медленнее туннелей (см. docs/BENCHMARK.md).
+func (u *Upstream) Transport(dialTimeout time.Duration) *http.Transport {
+	u.transportOnce.Do(func() {
+		dialer := &net.Dialer{Timeout: dialTimeout}
+		tr := &http.Transport{
+			// Сжатие и разжатие — дело клиента и сайта, прокси передаёт как есть.
+			DisableCompression:    true,
+			MaxIdleConnsPerHost:   64,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   dialTimeout,
+			ExpectContinueTimeout: time.Second,
+			// HTTP/2 к цели не разбираем — замеры считаются по HTTP/1.1.
+			ForceAttemptHTTP2: false,
+			TLSNextProto:      map[string]func(string, *tls.Conn) http.RoundTripper{},
+		}
+		switch u.Scheme {
+		case "http", "https":
+			// Transport сам шлёт absolute-form и Proxy-Authorization,
+			// а к https-прокси поднимает TLS.
+			proxyURL := &url.URL{Scheme: u.Scheme, Host: u.Addr}
+			if u.User != "" || u.Pass != "" {
+				proxyURL.User = url.UserPassword(u.User, u.Pass)
+			}
+			tr.Proxy = http.ProxyURL(proxyURL)
+			tr.DialContext = dialer.DialContext
+		default:
+			// socks5 и direct: соединение до цели прокладываем сами.
+			tr.DialContext = func(ctx context.Context, _, addr string) (net.Conn, error) {
+				ctx, cancel := context.WithTimeout(ctx, dialTimeout)
+				defer cancel()
+				return u.DialTarget(ctx, addr)
+			}
+		}
+		u.transport = tr
+	})
+	return u.transport
+}
+
+// CloseIdle закрывает простаивающие соединения пула. Вызывается, когда
+// апстрим выбывает из конфига: иначе его соединения жили бы до таймаута.
+func (u *Upstream) CloseIdle() {
+	if u.transport != nil {
+		u.transport.CloseIdleConnections()
+	}
 }
 
 var defaultPorts = map[string]string{"http": "80", "https": "443", "socks5": "1080"}

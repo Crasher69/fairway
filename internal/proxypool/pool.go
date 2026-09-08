@@ -106,6 +106,14 @@ func (p *Pool) Apply(cfg *config.Config) error {
 	p.rules = compileRules(cfg)
 	p.allowDirect = cfg.Defaults.AllowDirect
 	p.mu.Unlock()
+
+	// Выбывшие апстримы закрывают простаивающие соединения пула: иначе они
+	// висели бы до таймаута, а прокси уже вычеркнут из конфига.
+	for name, old := range previous {
+		if proxies[name] != old {
+			old.Upstream.CloseIdle()
+		}
+	}
 	return nil
 }
 
