@@ -1,10 +1,13 @@
 package forward
 
 import (
+	"bufio"
 	"compress/gzip"
 	"crypto/tls"
 	"crypto/x509"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -23,6 +26,7 @@ type mitmHarness struct {
 	target  *httptest.Server
 	proxy   *httptest.Server
 	client  *http.Client
+	roots   *x509.CertPool
 	mu      sync.Mutex
 	samples []Sample
 }
@@ -73,6 +77,7 @@ func (h *mitmHarness) wire(t *testing.T) {
 	if !ourRoots.AppendCertsFromPEM(ca.CertPEM()) {
 		t.Fatal("корневой сертификат не разобрался")
 	}
+	h.roots = ourRoots
 	proxyURL, _ := url.Parse(h.proxy.URL)
 	h.client = &http.Client{Transport: &http.Transport{
 		Proxy:           http.ProxyURL(proxyURL),
@@ -420,5 +425,67 @@ func TestMITMDetectsChallengePage(t *testing.T) {
 	}
 	if samples[0].Status != http.StatusOK {
 		t.Errorf("статус %d: капча приходит с 200, и именно поэтому нужен отдельный признак", samples[0].Status)
+	}
+}
+
+// TestMITMPassesWebSocketUpgrade — раньше Upgrade вычищался как hop-by-hop,
+// и WebSocket внутри расшифрованного туннеля ломался.
+func TestMITMPassesWebSocketUpgrade(t *testing.T) {
+	h := newMITMHarness(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Upgrade") != "websocket" || r.Header.Get("Sec-WebSocket-Key") == "" {
+			http.Error(w, "это не апгрейд: "+r.Header.Get("Upgrade"), http.StatusBadRequest)
+			return
+		}
+		conn, buf, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.Close()
+		io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: тест\r\n\r\n")
+		// Эхо: что пришло по «сокету», то и вернулось.
+		io.Copy(conn, buf)
+	})
+
+	// Клиент: CONNECT к прокси, TLS с доверием нашему CA, запрос Upgrade.
+	raw, err := net.Dial("tcp", mustHost(t, h.proxy.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	targetHost := mustHost(t, h.target.URL)
+	fmt.Fprintf(raw, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", targetHost, targetHost)
+	if resp, err := http.ReadResponse(bufio.NewReader(raw), nil); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("CONNECT: %v / %v", resp, err)
+	}
+	tlsConn := tls.Client(raw, &tls.Config{RootCAs: h.roots, ServerName: hostOnly(targetHost)})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintf(tlsConn, "GET /ws HTTP/1.1\r\nHost: %s\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: abc\r\nSec-WebSocket-Version: 13\r\n\r\n", targetHost)
+	reader := bufio.NewReader(tlsConn)
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols || resp.Header.Get("Sec-WebSocket-Accept") != "тест" {
+		t.Fatalf("ответ на апгрейд: %d %v", resp.StatusCode, resp.Header)
+	}
+
+	// После 101 соединение двустороннее: эхо должно вернуться.
+	const frame = "кадр-как-будто-websocket"
+	io.WriteString(tlsConn, frame)
+	echo := make([]byte, len(frame))
+	if _, err := io.ReadFull(reader, echo); err != nil {
+		t.Fatal(err)
+	}
+	if string(echo) != frame {
+		t.Errorf("эхо %q, ожидалось %q", echo, frame)
+	}
+	tlsConn.Close()
+
+	samples := h.waitSamples(t, 1)
+	if s := samples[0]; s.Status != http.StatusSwitchingProtocols || s.Bytes < int64(len(frame)) || s.Err != nil {
+		t.Errorf("замер WebSocket-сессии: статус %d, байт %d, ошибка %v", s.Status, s.Bytes, s.Err)
 	}
 }

@@ -147,7 +147,6 @@ fairway -export-ca fairway-ca.crt
   `CERT_TRUST_REVOCATION_STATUS_UNKNOWN` — лечится `--ssl-no-revoke`.
 - **Firefox, Java и Python** держат своё хранилище сертификатов, CA туда
   добавляется отдельно.
-- **WebSocket через MITM пока не работает** — для таких доменов `"mitm": false`.
 
 Корневой ключ (`data/fairway-ca.key`) — самое ценное, что есть у установки:
 кто его получит, сможет подписывать сертификаты, которым доверяет вся ваша

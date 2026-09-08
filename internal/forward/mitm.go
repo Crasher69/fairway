@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -71,26 +73,52 @@ func (s *Server) mitmTunnel(w http.ResponseWriter, route *Route, target string) 
 			return // клиент закрыл соединение или прислал мусор
 		}
 
-		sample := s.roundTrip(up, clientTLS, req, domain, route.Name)
+		sample := s.roundTrip(up, clientTLS, clientReader, req, domain, route.Name)
 		s.observe(sample)
 
-		if sample.Err != nil || req.Close {
+		// После 101 соединение отдано под WebSocket и уже отработало целиком.
+		if sample.Err != nil || req.Close || sample.Status == http.StatusSwitchingProtocols {
 			return
 		}
 	}
 }
 
+// isUpgrade распознаёт запрос на смену протокола (WebSocket).
+func isUpgrade(h http.Header) bool {
+	if h.Get("Upgrade") == "" {
+		return false
+	}
+	for _, v := range h.Values("Connection") {
+		for _, token := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // roundTrip проводит один расшифрованный запрос до цели и обратно, попутно
 // снимая замер. В отличие от непрозрачного туннеля здесь виден настоящий
 // HTTP-статус — отсюда точный детект бана.
-func (s *Server) roundTrip(up *mitmUpstream, client io.Writer, req *http.Request, domain, proxyName string) Sample {
+func (s *Server) roundTrip(up *mitmUpstream, client net.Conn, clientReader *bufio.Reader, req *http.Request, domain, proxyName string) Sample {
 	sample := Sample{Domain: domain, Upstream: proxyName}
 	started := time.Now()
 
 	req.URL.Scheme = "https"
 	req.URL.Host = up.target
 	req.RequestURI = ""
+	// Upgrade и Connection — hop-by-hop, но для WebSocket именно они и
+	// нужны: без них цель ответит обычной страницей вместо 101.
+	upgrade := ""
+	if isUpgrade(req.Header) {
+		upgrade = req.Header.Get("Upgrade")
+	}
 	removeHopByHop(req.Header)
+	if upgrade != "" {
+		req.Header.Set("Connection", "Upgrade")
+		req.Header.Set("Upgrade", upgrade)
+	}
 	// Brotli и zstd распаковывать нечем, а в сжатое тело не заглянуть —
 	// оставляем клиенту только gzip и deflate. Так делают все MITM-прокси.
 	if accept := challenge.AcceptEncoding(req.Header.Values("Accept-Encoding")); accept != "" {
@@ -113,7 +141,7 @@ func (s *Server) roundTrip(up *mitmUpstream, client io.Writer, req *http.Request
 		return s.fail(sample, started, client, err, up)
 	}
 
-	resp, ttfb, received, err := exchange(conn, req)
+	resp, targetReader, ttfb, received, err := exchange(conn, req)
 	if err != nil && retriable && !fresh && !received {
 		// Цель могла закрыть keep-alive соединение, пока оно простаивало, —
 		// это штатная ситуация, а не отказ прокси. Повторяем только если от
@@ -125,7 +153,7 @@ func (s *Server) roundTrip(up *mitmUpstream, client io.Writer, req *http.Request
 		sample.Reused = false
 		if err == nil {
 			rewind()
-			resp, ttfb, _, err = exchange(conn, req)
+			resp, targetReader, ttfb, _, err = exchange(conn, req)
 		}
 	}
 	if err != nil {
@@ -135,6 +163,16 @@ func (s *Server) roundTrip(up *mitmUpstream, client io.Writer, req *http.Request
 
 	sample.Status = resp.StatusCode
 	sample.TTFB = ttfb
+
+	if resp.StatusCode == http.StatusSwitchingProtocols {
+		// Цель согласилась на WebSocket: дальше это не HTTP, а два потока
+		// байт. Отдаём клиенту 101 и копируем в обе стороны, пока одна из
+		// сторон не закроется. Замер — за всю жизнь сокета.
+		sample.Bytes, sample.Err = s.pipeUpgraded(client, clientReader, conn, targetReader, resp)
+		sample.Duration = time.Since(started)
+		up.close()
+		return sample
+	}
 
 	// Начало тела запоминается по дороге к клиенту: по нему видно, не
 	// подсунул ли сайт вместо содержимого страницу проверки.
@@ -153,6 +191,36 @@ func (s *Server) roundTrip(up *mitmUpstream, client io.Writer, req *http.Request
 		up.close()
 	}
 	return sample
+}
+
+// pipeUpgraded проводит WebSocket-сессию после 101: заголовки ответа уходят
+// клиенту как есть, затем байты копируются в обе стороны. Оба bufio-ридера
+// обязательны: в них могут лежать кадры, вычитанные вместе с заголовками,
+// и терять их нельзя. Возвращает объём, пришедший от цели.
+func (s *Server) pipeUpgraded(client net.Conn, clientReader *bufio.Reader, target net.Conn, targetReader *bufio.Reader, resp *http.Response) (int64, error) {
+	if _, err := fmt.Fprintf(client, "HTTP/1.1 %d %s\r\n", resp.StatusCode, http.StatusText(resp.StatusCode)); err != nil {
+		return 0, err
+	}
+	if err := resp.Header.Write(client); err != nil {
+		return 0, err
+	}
+	if _, err := io.WriteString(client, "\r\n"); err != nil {
+		return 0, err
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = io.Copy(target, clientReader)
+		closeWrite(target)
+	}()
+	n, err := io.Copy(client, targetReader)
+	closeWrite(client)
+	<-done
+	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+		err = nil
+	}
+	return n, err
 }
 
 // fail оформляет неудачу: сообщает клиенту и закрывает соединение к цели.
@@ -208,21 +276,23 @@ func (s *Server) replayBodyLimit() int64 {
 // exchange отправляет запрос и читает ответ, замеряя время до первого байта.
 // received сообщает, пришёл ли от цели хотя бы один байт: по нему решается,
 // можно ли повторять запрос после ошибки.
-func exchange(conn net.Conn, req *http.Request) (resp *http.Response, ttfb time.Duration, received bool, err error) {
+// Возвращает и ридер цели: после 101 в нём могут лежать первые кадры.
+func exchange(conn net.Conn, req *http.Request) (resp *http.Response, reader *bufio.Reader, ttfb time.Duration, received bool, err error) {
 	sent := time.Now()
 	if err := req.Write(conn); err != nil {
-		return nil, 0, false, err
+		return nil, nil, 0, false, err
 	}
 	watcher := &firstByteWatcher{r: conn}
-	resp, err = http.ReadResponse(bufio.NewReader(watcher), req)
+	reader = bufio.NewReader(watcher)
+	resp, err = http.ReadResponse(reader, req)
 	received = !watcher.first.IsZero()
 	if err != nil {
-		return nil, 0, received, err
+		return nil, nil, 0, received, err
 	}
 	if received {
 		ttfb = watcher.first.Sub(sent)
 	}
-	return resp, ttfb, received, nil
+	return resp, reader, ttfb, received, nil
 }
 
 // mitmUpstream держит одно TLS-соединение до цели через выбранный апстрим.
