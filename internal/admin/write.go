@@ -22,6 +22,10 @@ type Editor struct {
 	Current func() *config.Config
 	// Apply применяет новый конфиг к живому пулу.
 	Apply func(*config.Config) error
+	// Saved вызывается сразу после записи файла — сторожу конфига, чтобы он
+	// не принял нашу же запись за чужую правку и не применил её второй раз.
+	// Может быть nil.
+	Saved func()
 
 	mu sync.Mutex
 }
@@ -49,6 +53,9 @@ func (e *Editor) edit(change func(*config.Config) error) (*config.Config, error)
 	}
 	if err := next.Save(e.Path); err != nil {
 		return nil, err
+	}
+	if e.Saved != nil {
+		e.Saved()
 	}
 	if err := e.Apply(next); err != nil {
 		return nil, err
@@ -173,6 +180,145 @@ func (s *Server) saveList(w http.ResponseWriter, r *http.Request) {
 		cfg.Lists = append(cfg.Lists, body)
 		return nil
 	})
+}
+
+// updateList правит существующий лист, в том числе переименовывает.
+// На имя листа ссылаются правила доменов и лист по умолчанию — при
+// переименовании ссылки чинятся здесь же, иначе правка имени разваливала
+// бы конфиг и человек видел бы «нет листа с именем …» вместо результата.
+func (s *Server) updateList(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var body config.List
+	if !decode(w, r, &body) {
+		return
+	}
+	s.applyEdit(w, func(cfg *config.Config) error {
+		index := -1
+		for i, existing := range cfg.Lists {
+			if existing.Name == name {
+				index = i
+				continue
+			}
+			if existing.Name == body.Name {
+				return fmt.Errorf("лист %q уже есть", body.Name)
+			}
+		}
+		if index < 0 {
+			return fmt.Errorf("лист %q не найден", name)
+		}
+		cfg.Lists[index] = body
+		if body.Name != name {
+			for i := range cfg.Domains {
+				if cfg.Domains[i].List == name {
+					cfg.Domains[i].List = body.Name
+				}
+			}
+			if cfg.Defaults.List == name {
+				cfg.Defaults.List = body.Name
+			}
+		}
+		return nil
+	})
+}
+
+// bulkProxies — одно действие над несколькими прокси разом: удалить,
+// положить в лист, убрать из листа. Одна правка конфига на всю пачку, а не
+// цикл из одиночных запросов: полсотни перезаписей файла — это полсотни
+// шансов застать конфиг применённым наполовину.
+func (s *Server) bulkProxies(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Names  []string `json:"names"`
+		Action string   `json:"action"`
+		List   string   `json:"list"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	if len(body.Names) == 0 {
+		http.Error(w, "не отмечено ни одного прокси", http.StatusBadRequest)
+		return
+	}
+	chosen := make(map[string]bool, len(body.Names))
+	for _, n := range body.Names {
+		chosen[n] = true
+	}
+
+	s.applyEdit(w, func(cfg *config.Config) error {
+		known := make(map[string]bool, len(cfg.Proxies))
+		for _, p := range cfg.Proxies {
+			known[p.Name] = true
+		}
+		for _, n := range body.Names {
+			if !known[n] {
+				return fmt.Errorf("прокси %q не найден", n)
+			}
+		}
+
+		switch body.Action {
+		case "delete":
+			for i := range cfg.Lists {
+				cfg.Lists[i].Proxies = withoutAny(cfg.Lists[i].Proxies, chosen)
+			}
+			kept := cfg.Proxies[:0]
+			for _, p := range cfg.Proxies {
+				if !chosen[p.Name] {
+					kept = append(kept, p)
+				}
+			}
+			cfg.Proxies = kept
+			return nil
+
+		case "add_to_list":
+			if body.List == "" {
+				return fmt.Errorf("не указан лист")
+			}
+			for i, list := range cfg.Lists {
+				if list.Name != body.List {
+					continue
+				}
+				present := make(map[string]bool, len(list.Proxies))
+				for _, ref := range list.Proxies {
+					present[ref] = true
+				}
+				// Порядок отмеченных сохраняем, уже лежащие в листе
+				// не дублируем.
+				for _, n := range body.Names {
+					if !present[n] {
+						cfg.Lists[i].Proxies = append(cfg.Lists[i].Proxies, n)
+						present[n] = true
+					}
+				}
+				return nil
+			}
+			cfg.Lists = append(cfg.Lists, config.List{Name: body.List, Proxies: append([]string(nil), body.Names...)})
+			return nil
+
+		case "remove_from_list":
+			if body.List == "" {
+				return fmt.Errorf("не указан лист")
+			}
+			for i, list := range cfg.Lists {
+				if list.Name == body.List {
+					cfg.Lists[i].Proxies = withoutAny(list.Proxies, chosen)
+					return nil
+				}
+			}
+			return fmt.Errorf("лист %q не найден", body.List)
+
+		default:
+			return fmt.Errorf("неизвестное действие %q", body.Action)
+		}
+	})
+}
+
+func withoutAny(list []string, drop map[string]bool) []string {
+	out := list[:0]
+	for _, item := range list {
+		if !drop[item] {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func (s *Server) deleteList(w http.ResponseWriter, r *http.Request) {

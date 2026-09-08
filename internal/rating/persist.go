@@ -72,6 +72,8 @@ func (r *Registry) Load(path string) error {
 
 // Autosave периодически сохраняет рейтинги и делает финальное сохранение
 // при отмене контекста — чтобы перезапуск не начинался с чистого листа.
+// Перед каждым сохранением вытесняются давно не использованные пары:
+// чистить удобнее всего там, где таблица и так обходится целиком.
 func (r *Registry) Autosave(ctx context.Context, path string, interval time.Duration, onError func(error)) {
 	if interval <= 0 {
 		interval = time.Minute
@@ -80,6 +82,7 @@ func (r *Registry) Autosave(ctx context.Context, path string, interval time.Dura
 	defer ticker.Stop()
 
 	save := func() {
+		r.Evict()
 		if err := r.Save(path); err != nil && onError != nil {
 			onError(err)
 		}

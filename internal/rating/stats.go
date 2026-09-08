@@ -55,12 +55,16 @@ type Stats struct {
 	lastUsed         time.Time
 }
 
-func newStats() *Stats {
+// newStats заводит пустую пару. Время создания записывается в lastUsed:
+// запись появляется ещё при выборе прокси, до первого замера, и без метки
+// её сразу же снесло бы вытеснение как «давно не использованную».
+func newStats(now time.Time) *Stats {
 	return &Stats{
 		connect:    NewEWMA(defaultAlpha),
 		ttfb:       NewEWMA(defaultAlpha),
 		throughput: NewEWMA(defaultAlpha),
 		errorRate:  NewEWMA(defaultAlpha),
+		lastUsed:   now,
 	}
 }
 
@@ -147,6 +151,28 @@ func (s *Stats) banLocked(now time.Time, d time.Duration, reason string) string 
 	s.banReason = reason
 	s.bans++
 	return reason
+}
+
+// unban снимает бан руками. Серия ошибок тоже обнуляется: иначе первая же
+// неудача после снятия вернула бы бан обратно, и кнопка выглядела бы
+// сломанной. Возвращает false, если бана и не было.
+func (s *Stats) unban(now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !now.Before(s.bannedUntil) {
+		return false
+	}
+	s.bannedUntil = time.Time{}
+	s.banReason = ""
+	s.consecutiveFails = 0
+	return true
+}
+
+// idleSince сообщает, когда пару трогали в последний раз.
+func (s *Stats) idleSince() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastUsed
 }
 
 // Banned сообщает, выключен ли прокси для домена прямо сейчас.
@@ -256,6 +282,11 @@ func (s *Stats) restore(snap Snapshot, now time.Time) {
 	s.errors = snap.Errors
 	s.bans = snap.Bans
 	s.lastUsed = snap.LastUsed
+	// В старых снапшотах метки нет — считаем запись свежей, иначе весь
+	// файл был бы вытеснен при первом же автосохранении.
+	if s.lastUsed.IsZero() {
+		s.lastUsed = now
+	}
 	// Протухший бан не восстанавливаем: за время простоя всё могло измениться.
 	if now.Before(snap.BannedUntil) {
 		s.bannedUntil = snap.BannedUntil

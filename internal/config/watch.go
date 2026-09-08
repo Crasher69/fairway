@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -23,6 +24,7 @@ type Watcher struct {
 	path     string
 	interval time.Duration
 
+	mu     sync.Mutex
 	last   fileStamp // последняя применённая версия
 	failed fileStamp // версия, на которую уже пожаловались
 }
@@ -50,24 +52,47 @@ func (w *Watcher) Run(ctx context.Context, onChange func(*Config), onError func(
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			current, err := stamp(w.path)
-			if err != nil || current == w.last {
-				continue
+			if cfg, ok := w.poll(onError); ok {
+				onChange(cfg)
 			}
-			cfg, err := Load(w.path)
-			if err != nil {
-				// Файл могли поймать в момент записи, поэтому last не трогаем —
-				// следующий тик перечитает. Но об одной и той же битой версии
-				// сообщаем один раз, иначе лог забьётся повторами.
-				if onError != nil && current != w.failed {
-					onError(err)
-				}
-				w.failed = current
-				continue
-			}
-			w.last = current
-			onChange(cfg)
 		}
+	}
+}
+
+// poll делает один шаг слежения: сравнивает штамп, читает файл. Под
+// блокировкой, чтобы не разойтись с MarkApplied.
+func (w *Watcher) poll(onError func(error)) (*Config, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	current, err := stamp(w.path)
+	if err != nil || current == w.last {
+		return nil, false
+	}
+	cfg, err := Load(w.path)
+	if err != nil {
+		// Файл могли поймать в момент записи, поэтому last не трогаем —
+		// следующий тик перечитает. Но об одной и той же битой версии
+		// сообщаем один раз, иначе лог забьётся повторами.
+		if onError != nil && current != w.failed {
+			onError(err)
+		}
+		w.failed = current
+		return nil, false
+	}
+	w.last = current
+	return cfg, true
+}
+
+// MarkApplied сообщает сторожу, что текущая версия файла уже применена.
+// Вызывается после записи из панели: та сохраняет и применяет конфиг сама,
+// и без этой метки сторож увидел бы «чужое» изменение и применил его ещё
+// раз — лишняя работа и лишняя строка «конфиг перечитан» в логе.
+func (w *Watcher) MarkApplied() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if current, err := stamp(w.path); err == nil {
+		w.last = current
 	}
 }
 

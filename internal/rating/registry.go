@@ -23,6 +23,13 @@ const DefaultEpsilon = 0.1
 // прокси вдвое дешевле получает вчетверо больше трафика.
 const DefaultSharpness = 2
 
+// DefaultEvictAfter — сколько пара (домен, прокси) живёт без запросов.
+// Запись заводится на каждую пару, и при правиле «*» с тысячами доменов
+// таблица росла бы бесконечно. За сутки простоя замеры всё равно протухают:
+// прокси за это время мог и умереть, и ожить, — так что пусть начинает
+// заново, как новый.
+const DefaultEvictAfter = 24 * time.Hour
+
 // Registry — рейтинги всех пар (домен, прокси).
 type Registry struct {
 	// Epsilon — доля разведочных запросов. 0 означает DefaultEpsilon.
@@ -37,6 +44,9 @@ type Registry struct {
 	BanDuration func(domain string) time.Duration
 	// OnBan вызывается, когда прокси выключается для домена. Может быть nil.
 	OnBan func(domain, proxy, reason string, until time.Time)
+	// EvictAfter — через сколько простоя пара забывается. 0 означает
+	// DefaultEvictAfter, отрицательное — не вытеснять вовсе.
+	EvictAfter time.Duration
 	// Now подменяется в тестах.
 	Now func() time.Time
 	// Rand подменяется в тестах, чтобы выбор был воспроизводим.
@@ -99,10 +109,56 @@ func (r *Registry) Stats(domain, proxy string) *Stats {
 	}
 	s, ok := byProxy[proxy]
 	if !ok {
-		s = newStats()
+		s = newStats(r.now())
 		byProxy[proxy] = s
 	}
 	return s
+}
+
+// Unban снимает бан с прокси для домена. Возвращает false, если пары нет
+// или бана не было — панели есть разница между «снял» и «нечего снимать».
+func (r *Registry) Unban(domain, proxy string) bool {
+	r.mu.RLock()
+	s := r.byDomain[domain][proxy]
+	r.mu.RUnlock()
+	if s == nil {
+		return false
+	}
+	return s.unban(r.now())
+}
+
+// Evict забывает пары, которые не использовались дольше EvictAfter, и
+// домены, у которых не осталось ни одной пары. Возвращает число снесённых
+// пар. Забаненные не трогаются: бан должен дожить до своего срока.
+func (r *Registry) Evict() int {
+	ttl := r.EvictAfter
+	if ttl == 0 {
+		ttl = DefaultEvictAfter
+	}
+	if ttl < 0 {
+		return 0
+	}
+	now := r.now()
+	deadline := now.Add(-ttl)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	removed := 0
+	for domain, byProxy := range r.byDomain {
+		for proxy, s := range byProxy {
+			if banned, _, _ := s.Banned(now); banned {
+				continue
+			}
+			if s.idleSince().Before(deadline) {
+				delete(byProxy, proxy)
+				removed++
+			}
+		}
+		if len(byProxy) == 0 {
+			delete(r.byDomain, domain)
+		}
+	}
+	return removed
 }
 
 // Observe скармливает рейтингу замер завершённого запроса.

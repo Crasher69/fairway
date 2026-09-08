@@ -444,3 +444,42 @@ func TestCAActionsRequireToken(t *testing.T) {
 		}
 	}
 }
+
+func TestUnbanFromPanel(t *testing.T) {
+	srv, ts := newTestServer(t, "")
+	for i := 0; i < 3; i++ {
+		observe(srv, sample("example.com", "slow", 0, 0, errors.New("connection refused")))
+	}
+	var view domainResponse
+	getJSON(t, ts.URL, "/api/domains/example.com", &view)
+	if !view.Proxies[len(view.Proxies)-1].Banned {
+		t.Fatal("прокси не забанен, проверять нечего")
+	}
+
+	resp, err := http.Post(ts.URL+"/api/domains/example.com/unban/slow", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("снятие бана: статус %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&view); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range view.Proxies {
+		if p.Banned {
+			t.Errorf("после снятия бана %s всё ещё забанен", p.Name)
+		}
+	}
+
+	// Повторно снимать нечего.
+	again, err := http.Post(ts.URL+"/api/domains/example.com/unban/slow", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again.Body.Close()
+	if again.StatusCode != http.StatusNotFound {
+		t.Errorf("повторное снятие: статус %d, ожидался 404", again.StatusCode)
+	}
+}

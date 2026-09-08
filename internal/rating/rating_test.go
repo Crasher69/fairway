@@ -3,6 +3,7 @@ package rating
 import (
 	"errors"
 	"math"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -436,5 +437,98 @@ func TestBanIsNotExtendedWhileActive(t *testing.T) {
 	}
 	if snap := stats.Snapshot(); snap.Bans != 1 {
 		t.Errorf("счётчик банов: %d, ожидался 1", snap.Bans)
+	}
+}
+
+func TestUnbanClearsBanAndStreak(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	r := NewRegistry()
+	r.Now = func() time.Time { return now }
+	r.BanDuration = func(string) time.Duration { return 10 * time.Minute }
+
+	if r.Unban("example.com", "p1") {
+		t.Error("снятие бана с несуществующей пары должно вернуть false")
+	}
+	for i := 0; i < failsBeforeBan; i++ {
+		r.Observe(sample("example.com", "p1", 0, 0, 0, 0, errors.New("connection refused")))
+	}
+	if banned, _, _ := r.Stats("example.com", "p1").Banned(now); !banned {
+		t.Fatal("после серии ошибок бан не выставлен")
+	}
+	if !r.Unban("example.com", "p1") {
+		t.Fatal("снятие действующего бана должно вернуть true")
+	}
+	if banned, _, _ := r.Stats("example.com", "p1").Banned(now); banned {
+		t.Error("бан не снят")
+	}
+	if r.Unban("example.com", "p1") {
+		t.Error("повторное снятие должно вернуть false: бана уже нет")
+	}
+	// Серия ошибок обнулена: одна неудача после снятия не возвращает бан.
+	r.Observe(sample("example.com", "p1", 0, 0, 0, 0, errors.New("connection refused")))
+	if banned, _, _ := r.Stats("example.com", "p1").Banned(now); banned {
+		t.Error("одна ошибка после снятия бана вернула его обратно")
+	}
+}
+
+func TestEvictForgetsIdlePairsButKeepsBans(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	r := NewRegistry()
+	r.Now = func() time.Time { return now }
+	r.BanDuration = func(string) time.Duration { return 48 * time.Hour }
+
+	r.Observe(sample("old.example.com", "p1", 10*time.Millisecond, 20*time.Millisecond, 1000, 200, nil))
+	r.Observe(sample("old.example.com", "p2", 10*time.Millisecond, 20*time.Millisecond, 1000, 403, nil))
+	// Пара, заведённая выбором без единого замера, тоже считается свежей.
+	r.Stats("old.example.com", "p3")
+
+	now = now.Add(25 * time.Hour)
+	r.Observe(sample("fresh.example.com", "p1", 10*time.Millisecond, 20*time.Millisecond, 1000, 200, nil))
+
+	if got := r.Evict(); got != 2 {
+		t.Fatalf("вытеснено %d пар, ожидалось 2 (p1 и p3 у старого домена)", got)
+	}
+	snap := r.Snapshot("old.example.com")
+	if _, ok := snap.Proxies["p2"]; !ok {
+		t.Error("забаненная пара вытеснена, хотя бан ещё действует")
+	}
+	if _, ok := snap.Proxies["p1"]; ok {
+		t.Error("простоявшая сутки пара не вытеснена")
+	}
+	if got := r.Domains(); len(got) != 2 {
+		t.Errorf("домены после вытеснения: %v", got)
+	}
+
+	// Домен без единой живой пары исчезает целиком.
+	now = now.Add(48 * time.Hour)
+	r.Evict()
+	if got := r.Domains(); len(got) != 0 {
+		t.Errorf("после полного простоя домены должны исчезнуть, осталось: %v", got)
+	}
+
+	// Отрицательный срок выключает вытеснение.
+	r.EvictAfter = -1
+	r.Observe(sample("keep.example.com", "p1", 10*time.Millisecond, 20*time.Millisecond, 1000, 200, nil))
+	now = now.Add(1000 * time.Hour)
+	if got := r.Evict(); got != 0 {
+		t.Errorf("при выключенном вытеснении снесено %d пар", got)
+	}
+}
+
+func TestLoadWithoutLastUsedIsNotEvictedAtOnce(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "ratings.json")
+	// Снапшот прежней версии: без last_used.
+	raw := `{"saved_at":"2026-09-08T11:00:00Z","domains":{"example.com":{"p1":{"connect_ms":10,"ttfb_ms":20,"samples":5,"requests":5,"cost":0.3}}}}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRegistry()
+	r.Now = func() time.Time { return now }
+	if err := r.Load(path); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Evict(); got != 0 {
+		t.Errorf("запись без метки времени вытеснена сразу после загрузки (%d)", got)
 	}
 }

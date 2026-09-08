@@ -506,3 +506,131 @@ func TestImportNothingKeepsConfig(t *testing.T) {
 		t.Errorf("состав прокси изменился: %d", len(disk.Proxies))
 	}
 }
+
+func TestRenameListFixesReferences(t *testing.T) {
+	e := newEditable(t)
+	// Лист main — и в правиле example.com, и сделаем его листом по умолчанию.
+	if status, body := send(t, "PUT", e.url+"/api/defaults", map[string]any{"list": "main", "ban_duration": "5m"}); status != 200 {
+		t.Fatalf("defaults: %d %s", status, body)
+	}
+	status, body := send(t, "PUT", e.url+"/api/lists/main", config.List{Name: "primary", Proxies: []string{"fast"}})
+	if status != 200 {
+		t.Fatalf("переименование: %d %s", status, body)
+	}
+	cfg := e.onDisk(t)
+	if len(cfg.Lists) != 1 || cfg.Lists[0].Name != "primary" || len(cfg.Lists[0].Proxies) != 1 {
+		t.Errorf("лист после переименования: %+v", cfg.Lists)
+	}
+	if cfg.Domains[0].List != "primary" {
+		t.Errorf("правило домена ссылается на %q, ожидалось primary", cfg.Domains[0].List)
+	}
+	if cfg.Defaults.List != "primary" {
+		t.Errorf("лист по умолчанию %q, ожидался primary", cfg.Defaults.List)
+	}
+
+	// Переименовать в занятое имя нельзя, несуществующий лист — тоже.
+	send(t, "PUT", e.url+"/api/lists", config.List{Name: "other", Proxies: []string{"slow"}})
+	if status, _ := send(t, "PUT", e.url+"/api/lists/other", config.List{Name: "primary", Proxies: []string{"slow"}}); status != 400 {
+		t.Errorf("переименование в занятое имя: статус %d, ожидался 400", status)
+	}
+	if status, _ := send(t, "PUT", e.url+"/api/lists/нет", config.List{Name: "x", Proxies: []string{"slow"}}); status != 400 {
+		t.Errorf("правка несуществующего листа: статус %d, ожидался 400", status)
+	}
+}
+
+func TestBulkProxies(t *testing.T) {
+	e := newEditable(t)
+	send(t, "POST", e.url+"/api/proxies", config.Proxy{Name: "third", URL: "http://3.3.3.3:8080"})
+
+	// Положить в новый лист: лист создаётся.
+	status, body := send(t, "POST", e.url+"/api/proxies/bulk", map[string]any{
+		"names": []string{"fast", "third"}, "action": "add_to_list", "list": "picked",
+	})
+	if status != 200 {
+		t.Fatalf("add_to_list: %d %s", status, body)
+	}
+	cfg := e.onDisk(t)
+	if got := findList(cfg, "picked"); got == nil || strings.Join(got.Proxies, ",") != "fast,third" {
+		t.Fatalf("лист picked после добавления: %+v", got)
+	}
+
+	// Повторное добавление не дублирует, новые дописываются в конец.
+	send(t, "POST", e.url+"/api/proxies/bulk", map[string]any{
+		"names": []string{"third", "slow"}, "action": "add_to_list", "list": "picked",
+	})
+	if got := findList(e.onDisk(t), "picked"); strings.Join(got.Proxies, ",") != "fast,third,slow" {
+		t.Errorf("лист picked после повторного добавления: %v", got.Proxies)
+	}
+
+	// Убрать из листа.
+	send(t, "POST", e.url+"/api/proxies/bulk", map[string]any{
+		"names": []string{"third"}, "action": "remove_from_list", "list": "picked",
+	})
+	if got := findList(e.onDisk(t), "picked"); strings.Join(got.Proxies, ",") != "fast,slow" {
+		t.Errorf("лист picked после удаления из него: %v", got.Proxies)
+	}
+
+	// Удалить пачкой: исчезают и из листов. Лист main остаётся с одним slow.
+	status, body = send(t, "POST", e.url+"/api/proxies/bulk", map[string]any{
+		"names": []string{"fast", "third"}, "action": "delete",
+	})
+	if status != 200 {
+		t.Fatalf("delete: %d %s", status, body)
+	}
+	cfg = e.onDisk(t)
+	if len(cfg.Proxies) != 1 || cfg.Proxies[0].Name != "slow" {
+		t.Errorf("прокси после массового удаления: %+v", cfg.Proxies)
+	}
+	if got := findList(cfg, "main"); strings.Join(got.Proxies, ",") != "slow" {
+		t.Errorf("лист main после массового удаления: %v", got.Proxies)
+	}
+
+	// Ошибки: пустой набор, неизвестный прокси, неизвестное действие.
+	if status, _ := send(t, "POST", e.url+"/api/proxies/bulk", map[string]any{"names": []string{}, "action": "delete"}); status != 400 {
+		t.Errorf("пустой набор: статус %d", status)
+	}
+	if status, _ := send(t, "POST", e.url+"/api/proxies/bulk", map[string]any{"names": []string{"нет"}, "action": "delete"}); status != 400 {
+		t.Errorf("неизвестный прокси: статус %d", status)
+	}
+	if status, _ := send(t, "POST", e.url+"/api/proxies/bulk", map[string]any{"names": []string{"slow"}, "action": "explode"}); status != 400 {
+		t.Errorf("неизвестное действие: статус %d", status)
+	}
+	// Удалить последний прокси листа нельзя: лист стал бы пустым, а пустой
+	// лист конфиг не пропускает. Конфиг на диске остаётся прежним.
+	if status, _ := send(t, "POST", e.url+"/api/proxies/bulk", map[string]any{"names": []string{"slow"}, "action": "delete"}); status != 400 {
+		t.Errorf("удаление последнего прокси листа: статус %d, ожидался 400", status)
+	}
+	if got := e.onDisk(t); len(got.Proxies) != 1 {
+		t.Errorf("после отклонённой правки конфиг на диске изменился: %+v", got.Proxies)
+	}
+}
+
+func findList(cfg *config.Config, name string) *config.List {
+	for i := range cfg.Lists {
+		if cfg.Lists[i].Name == name {
+			return &cfg.Lists[i]
+		}
+	}
+	return nil
+}
+
+func TestEditorNotifiesWatcherAfterSave(t *testing.T) {
+	e := newEditable(t)
+	saved := 0
+	e.srv.Editor.Saved = func() {
+		saved++
+		// К этому моменту файл уже на диске.
+		if _, err := os.Stat(e.path); err != nil {
+			t.Errorf("Saved вызван до записи файла: %v", err)
+		}
+	}
+	send(t, "POST", e.url+"/api/proxies", config.Proxy{Name: "third", URL: "http://3.3.3.3:8080"})
+	if saved != 1 {
+		t.Errorf("Saved вызван %d раз, ожидался 1", saved)
+	}
+	// Отклонённая правка файл не трогает — и сторожу сообщать нечего.
+	send(t, "POST", e.url+"/api/proxies", config.Proxy{Name: "third", URL: "http://3.3.3.3:8080"})
+	if saved != 1 {
+		t.Errorf("Saved вызван после отклонённой правки")
+	}
+}

@@ -1,4 +1,9 @@
 // Command fairway — адаптивный прокси-балансировщик с опциональным MITM.
+//
+// Иконка приложения (rsrc_windows_*.syso рядом) генерируется из
+// internal/brand — см. cmd/mkicon.
+//
+//go:generate go run ../mkicon -root ../..
 package main
 
 import (
@@ -135,25 +140,29 @@ func main() {
 	}
 
 	adminSrv := &admin.Server{
-		Pool:     pool,
-		Ratings:  ratings,
-		Recorder: recorder,
-		Issuer:   issuer,
-		CA:       ca,
-		Config:   readConfig,
-		Token:    adminToken(logger, *adminTokenFlag),
-		Version:  version,
-		Started:  time.Now(),
+		Pool:      pool,
+		Ratings:   ratings,
+		Recorder:  recorder,
+		Issuer:    issuer,
+		CA:        ca,
+		Config:    readConfig,
+		Token:     adminToken(logger, *adminTokenFlag),
+		Version:   version,
+		Started:   time.Now(),
+		ProxyAddr: displayAddr(*proxyAddr),
 	}
 	// Правка из панели и слежение за файлом имеют смысл только когда конфиг
 	// живёт в файле: при -upstream он собран из флагов и сохранять его некуда.
 	if len(upstreams) == 0 {
+		watcher := config.NewWatcher(*configPath, *pollInterval)
 		adminSrv.Editor = &admin.Editor{
 			Path:    *configPath,
 			Current: readConfig,
 			Apply:   applyConfig,
+			// Панель сохраняет и применяет сама — сторожу незачем
+			// применять ту же версию второй раз.
+			Saved: watcher.MarkApplied,
 		}
-		watcher := config.NewWatcher(*configPath, *pollInterval)
 		go watcher.Run(ctx,
 			func(updated *config.Config) {
 				if err := applyConfig(updated); err != nil {

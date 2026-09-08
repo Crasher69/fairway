@@ -6,6 +6,7 @@ package admin
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"net"
 	"net/http"
@@ -37,6 +38,10 @@ type Server struct {
 	Token   string
 	Version string
 	Started time.Time
+	// ProxyAddr — адрес, на котором слушает сам прокси. Панель показывает
+	// его в подсказке «как начать»: без него человек, впервые открывший
+	// панель, не знает, что прописать в настройках браузера.
+	ProxyAddr string
 }
 
 // Handler собирает маршруты админки.
@@ -54,8 +59,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/proxies/import", s.importProxies)
 	mux.HandleFunc("PUT /api/proxies/{name}", s.updateProxy)
 	mux.HandleFunc("DELETE /api/proxies/{name}", s.deleteProxy)
+	mux.HandleFunc("POST /api/proxies/bulk", s.bulkProxies)
 	mux.HandleFunc("PUT /api/lists", s.saveList)
+	mux.HandleFunc("PUT /api/lists/{name}", s.updateList)
 	mux.HandleFunc("DELETE /api/lists/{name}", s.deleteList)
+	mux.HandleFunc("POST /api/domains/{domain}/unban/{proxy}", s.unban)
 	mux.HandleFunc("PUT /api/domains", s.saveDomain)
 	mux.HandleFunc("DELETE /api/domains/{pattern}", s.deleteDomain)
 	mux.HandleFunc("PUT /api/defaults", s.saveDefaults)
@@ -120,8 +128,14 @@ type overviewResponse struct {
 	CASubject  string    `json:"ca_subject"`
 	CAExpires  time.Time `json:"ca_expires"`
 	ConfigPath string    `json:"config_path"`
-	CertsCache int       `json:"certs_cached"`
-	Watchers   int       `json:"watchers"`
+	ProxyAddr  string    `json:"proxy_addr"`
+	Editable   bool      `json:"editable"`
+	// DefaultList и AllowDirect — для подсказки «как начать»: панель должна
+	// понимать, дойдёт ли трафик до прокси без единого правила.
+	DefaultList string `json:"default_list"`
+	AllowDirect bool   `json:"allow_direct"`
+	CertsCache  int    `json:"certs_cached"`
+	Watchers    int    `json:"watchers"`
 	// Рантайм пригождается в проде: по числу горутин видно утечку соединений,
 	// по куче — не пора ли поднимать лимиты.
 	Goroutines int     `json:"goroutines"`
@@ -131,17 +145,21 @@ type overviewResponse struct {
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	cfg := s.Config()
 	resp := overviewResponse{
-		Version:   s.Version,
-		Started:   s.Started,
-		UptimeSec: time.Since(s.Started).Seconds(),
-		Requests:  s.Recorder.Total(),
-		Proxies:   len(s.Pool.Proxies()),
-		Lists:     len(cfg.Lists),
-		Domains:   len(cfg.Domains),
-		Watchers:  s.Recorder.Subscribers(),
+		Version:     s.Version,
+		Started:     s.Started,
+		UptimeSec:   time.Since(s.Started).Seconds(),
+		Requests:    s.Recorder.Total(),
+		Proxies:     len(s.Pool.Proxies()),
+		Lists:       len(cfg.Lists),
+		Domains:     len(cfg.Domains),
+		Watchers:    s.Recorder.Subscribers(),
+		ProxyAddr:   s.ProxyAddr,
+		DefaultList: cfg.Defaults.List,
+		AllowDirect: cfg.Defaults.AllowDirect,
 	}
 	if s.Editor != nil {
 		resp.ConfigPath = s.Editor.Path
+		resp.Editable = s.Editor.Path != ""
 	}
 
 	var mem runtime.MemStats
@@ -324,6 +342,18 @@ func (s *Server) domain(w http.ResponseWriter, r *http.Request) {
 		return a.Cost < b.Cost
 	})
 	writeJSON(w, resp)
+}
+
+// unban снимает бан с прокси для домена — руками, из панели. Бан ставится
+// автоматически и сам истечёт, но ждать пять минут, когда точно знаешь,
+// что 403 был разовым, незачем.
+func (s *Server) unban(w http.ResponseWriter, r *http.Request) {
+	domain, proxy := r.PathValue("domain"), r.PathValue("proxy")
+	if !s.Ratings.Unban(domain, proxy) {
+		http.Error(w, fmt.Sprintf("прокси %s для %s не забанен", proxy, domain), http.StatusNotFound)
+		return
+	}
+	s.domain(w, r)
 }
 
 // statusOf переводит цифры в слово, которое видно в таблице без вчитывания.
