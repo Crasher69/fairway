@@ -180,6 +180,7 @@ func (r *Registry) Observe(sample forward.Sample) {
 		bytes:      sample.Bytes,
 		throughput: sample.Throughput(),
 		status:     sample.Status,
+		challenge:  sample.Challenge,
 		failed:     sample.Err != nil,
 		reused:     sample.Reused,
 		at:         now,

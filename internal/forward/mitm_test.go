@@ -1,6 +1,7 @@
 package forward
 
 import (
+	"compress/gzip"
 	"crypto/tls"
 	"crypto/x509"
 	"io"
@@ -385,5 +386,39 @@ func TestBufferBody(t *testing.T) {
 	req, _ = http.NewRequest("POST", "https://example.com/", strings.NewReader("abc"))
 	if rewind, _ := bufferBody(req, -1); rewind != nil {
 		t.Error("при отрицательном лимите тело не должно буферизоваться")
+	}
+}
+
+// TestMITMDetectsChallengePage — сайт отвечает 200 и сжатой страницей
+// «Just a moment…»; по туннелю это выглядело бы успехом.
+func TestMITMDetectsChallengePage(t *testing.T) {
+	var gotAccept string
+	h := newMITMHarness(t, func(w http.ResponseWriter, r *http.Request) {
+		gotAccept = r.Header.Get("Accept-Encoding")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Content-Encoding", "gzip")
+		zw := gzip.NewWriter(w)
+		io.WriteString(zw, `<!DOCTYPE html><html><head><title>Just a moment...</title></head><body><script>window._cf_chl_opt={}</script>`+strings.Repeat("<p>…</p>", 3000)+`</body></html>`)
+		zw.Close()
+	})
+
+	req, _ := http.NewRequest("GET", h.target.URL+"/", nil)
+	req.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
+	resp, err := h.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	if gotAccept != "gzip, deflate" {
+		t.Errorf("до цели дошёл Accept-Encoding %q: brotli и zstd должны быть вырезаны, иначе в тело не заглянуть", gotAccept)
+	}
+	samples := h.waitSamples(t, 1)
+	if samples[0].Challenge != "cloudflare" {
+		t.Errorf("Sample.Challenge = %q, ожидалось cloudflare", samples[0].Challenge)
+	}
+	if samples[0].Status != http.StatusOK {
+		t.Errorf("статус %d: капча приходит с 200, и именно поэтому нужен отдельный признак", samples[0].Status)
 	}
 }

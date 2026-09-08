@@ -220,8 +220,12 @@ func logSample(logger *log.Logger, s forward.Sample) {
 		logger.Printf("%s через %s: ОШИБКА %v (connect %s)", s.Domain, s.Upstream, s.Err, round(s.Connect))
 		return
 	}
-	logger.Printf("%s через %s: статус %d, connect %s, ttfb %s, %d Б, %.0f Б/с, всего %s",
-		s.Domain, s.Upstream, s.Status, round(s.Connect), round(s.TTFB),
+	captcha := ""
+	if s.Challenge != "" {
+		captcha = " КАПЧА " + s.Challenge + ","
+	}
+	logger.Printf("%s через %s: статус %d,%s connect %s, ttfb %s, %d Б, %.0f Б/с, всего %s",
+		s.Domain, s.Upstream, s.Status, captcha, round(s.Connect), round(s.TTFB),
 		s.Bytes, s.Throughput(), round(s.Duration))
 }
 

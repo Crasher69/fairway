@@ -532,3 +532,24 @@ func TestLoadWithoutLastUsedIsNotEvictedAtOnce(t *testing.T) {
 		t.Errorf("запись без метки времени вытеснена сразу после загрузки (%d)", got)
 	}
 }
+
+// TestChallengeBansLike403 — страница проверки приходит со статусом 200, и
+// без отдельного признака рейтинг считал бы её успехом.
+func TestChallengeBansLike403(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	r := NewRegistry()
+	r.Now = func() time.Time { return now }
+	r.BanDuration = func(string) time.Duration { return 5 * time.Minute }
+
+	s := sample("shop.example.com", "p1", 10*time.Millisecond, 20*time.Millisecond, 5000, 200, nil)
+	s.Challenge = "cloudflare"
+	r.Observe(s)
+
+	banned, _, reason := r.Stats("shop.example.com", "p1").Banned(now)
+	if !banned {
+		t.Fatal("капча со статусом 200 должна банить прокси для домена")
+	}
+	if reason != "капча: cloudflare" {
+		t.Errorf("причина бана %q", reason)
+	}
+}

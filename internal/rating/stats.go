@@ -75,6 +75,7 @@ type observation struct {
 	bytes      int64
 	throughput float64
 	status     int
+	challenge  string // имя антибот-заслона, если вместо ответа пришла капча
 	failed     bool
 	reused     bool // соединение переиспользовано: connect не измерялся
 	at         time.Time
@@ -113,6 +114,11 @@ func (s *Stats) add(o observation, banFor time.Duration) string {
 		s.throughput.Add(o.throughput)
 	}
 
+	// Страница проверки — тот же бан, что и 403: сайт узнал прокси и не
+	// пускает, только вежливо. Статус при этом может быть 200.
+	if o.challenge != "" {
+		return s.banLocked(o.at, banFor, "капча: "+o.challenge)
+	}
 	if reason := banReasonForStatus(o.status); reason != "" {
 		return s.banLocked(o.at, banFor, reason)
 	}

@@ -365,14 +365,15 @@ function renderLog() {
   }
   body.replaceChildren(...recent.map((e) => {
     const tr = document.createElement('tr');
-    const status = e.error ? 'ошибка' : (e.status || 'туннель');
+    const status = e.error ? 'ошибка' : e.challenge ? `${e.status} капча` : (e.status || 'туннель');
 
     const proxy = document.createElement('td');
     proxy.className = 'name';
     proxy.textContent = e.proxy;
 
-    const statusCell = cell(status, e.error || e.status >= 400 ? 'status-err' : '');
+    const statusCell = cell(status, e.error || e.challenge || e.status >= 400 ? 'status-err' : '');
     if (e.error) statusCell.title = e.error;
+    if (e.challenge) statusCell.title = 'вместо содержимого пришла страница проверки: ' + e.challenge;
 
     const when = document.createElement('td');
     when.className = 'mono';

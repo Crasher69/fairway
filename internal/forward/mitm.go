@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"fairway/internal/challenge"
 )
 
 // CertIssuer выпускает сертификаты доменов для разговора с клиентом.
@@ -89,6 +91,11 @@ func (s *Server) roundTrip(up *mitmUpstream, client io.Writer, req *http.Request
 	req.URL.Host = up.target
 	req.RequestURI = ""
 	removeHopByHop(req.Header)
+	// Brotli и zstd распаковывать нечем, а в сжатое тело не заглянуть —
+	// оставляем клиенту только gzip и deflate. Так делают все MITM-прокси.
+	if accept := challenge.AcceptEncoding(req.Header.Values("Accept-Encoding")); accept != "" {
+		req.Header.Set("Accept-Encoding", accept)
+	}
 
 	// Тело до лимита читается в память: иначе повторить запрос нельзя,
 	// а keep-alive соединение к цели умирает как раз в паузе между
@@ -129,13 +136,18 @@ func (s *Server) roundTrip(up *mitmUpstream, client io.Writer, req *http.Request
 	sample.Status = resp.StatusCode
 	sample.TTFB = ttfb
 
+	// Начало тела запоминается по дороге к клиенту: по нему видно, не
+	// подсунул ли сайт вместо содержимого страницу проверки.
 	counted := &countingReader{r: resp.Body}
-	resp.Body = io.NopCloser(counted)
+	sniff := &prefixReader{r: counted, limit: challenge.PrefixSize}
+	resp.Body = io.NopCloser(sniff)
 	if err := resp.Write(client); err != nil {
 		sample.Err = err
 	}
 	sample.Bytes = counted.n
 	sample.Duration = time.Since(started)
+	sample.Challenge = challenge.Detect(resp.StatusCode, resp.Header,
+		challenge.Decode(resp.Header.Get("Content-Encoding"), sniff.buf))
 
 	if resp.Close {
 		up.close()
@@ -272,6 +284,25 @@ type countingReader struct {
 func (c *countingReader) Read(b []byte) (int, error) {
 	n, err := c.r.Read(b)
 	c.n += int64(n)
+	return n, err
+}
+
+// prefixReader пропускает поток через себя и оставляет копию первых
+// limit байт.
+type prefixReader struct {
+	r     io.Reader
+	limit int
+	buf   []byte
+}
+
+func (p *prefixReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	if room := p.limit - len(p.buf); n > 0 && room > 0 {
+		if n < room {
+			room = n
+		}
+		p.buf = append(p.buf, b[:room]...)
+	}
 	return n, err
 }
 

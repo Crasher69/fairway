@@ -28,6 +28,7 @@ type Event struct {
 	Speed     float64   `json:"speed"`
 	Reused    bool      `json:"reused"`
 	Error     string    `json:"error,omitempty"`
+	Challenge string    `json:"challenge,omitempty"`
 }
 
 // Recorder хранит последние события и рассылает их подписчикам.
@@ -68,6 +69,7 @@ func (r *Recorder) Observe(s forward.Sample) {
 		Bytes:     s.Bytes,
 		Speed:     s.Throughput(),
 		Reused:    s.Reused,
+		Challenge: s.Challenge,
 	}
 	if s.Err != nil {
 		event.Error = s.Err.Error()
