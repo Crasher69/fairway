@@ -248,12 +248,17 @@ function humanDuration(s) {
   return parts.join(' ') || 'выключен';
 }
 
+// Паттерн, который нужно подставить в форму правила, когда откроется
+// вкладка «Домены»: у домена без правила ссылка ведёт сразу в форму.
+let pendingRulePattern = null;
+
 $('rule-edit-link').onclick = (event) => {
   // Переходим на вкладку с уже набранным поиском по нужному паттерну.
   event.preventDefault();
   const pattern = event.currentTarget.dataset.pattern || '';
   filters.rule = pattern;
   $('rule-filter').value = pattern;
+  if (event.currentTarget.textContent === 'Добавить правило') pendingRulePattern = pattern;
   window.location.hash = 'rules';
 };
 
@@ -618,6 +623,12 @@ function showView(name) {
   currentView = name;
   if (name === 'cert') refreshCert().catch(showConfigError);
   else if (name !== 'monitor') refreshSettings().catch(showConfigError);
+  if (name === 'rules' && pendingRulePattern !== null) {
+    resetRuleForm();
+    $('rule-form').pattern.value = pendingRulePattern;
+    pendingRulePattern = null;
+    openPanel('rule-form-card');
+  }
 }
 
 document.querySelectorAll('.tab').forEach((tab) => {
@@ -628,6 +639,50 @@ document.querySelectorAll('.tab').forEach((tab) => {
 
 window.addEventListener('hashchange', () => showView(window.location.hash.slice(1)));
 showView(window.location.hash.slice(1));
+
+// --- раскрывающиеся панели с формами ---
+
+// Формы добавления свёрнуты над таблицами: с полусотней прокси крутить до
+// формы внизу пришлось бы каждый раз. Кнопка в шапке страницы открывает и
+// закрывает панель, «Изменить» в строке открывает её же с заполненными
+// полями, «Закрыть» и «Отмена» сбрасывают форму.
+function openPanel(id) {
+  const panel = $(id);
+  panel.hidden = false;
+  document.querySelectorAll(`[data-panel="${id}"]`).forEach((b) => b.classList.add('open'));
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  const first = panel.querySelector('input:not([type="checkbox"]), textarea');
+  if (first) first.focus({ preventScroll: true });
+}
+
+function closePanel(id) {
+  $(id).hidden = true;
+  document.querySelectorAll(`[data-panel="${id}"]`).forEach((b) => b.classList.remove('open'));
+}
+
+// Что сбросить, закрывая панель: форма могла быть в режиме правки.
+const panelReset = {
+  'proxy-form-card': () => resetProxyForm(),
+  'list-form-card': () => resetListForm(),
+  'rule-form-card': () => resetRuleForm(),
+};
+
+document.querySelectorAll('[data-panel]').forEach((btn) => {
+  btn.onclick = () => {
+    const id = btn.dataset.panel;
+    const wasHidden = $(id).hidden;
+    if (panelReset[id]) panelReset[id]();
+    if (wasHidden) openPanel(id); else closePanel(id);
+  };
+});
+
+document.querySelectorAll('[data-close]').forEach((btn) => {
+  btn.onclick = () => {
+    const id = btn.dataset.close;
+    if (panelReset[id]) panelReset[id]();
+    closePanel(id);
+  };
+});
 
 // --- настройки ---
 
@@ -888,8 +943,7 @@ function startProxyEdit(proxy) {
   form.comment.value = proxy.comment || '';
   $('proxy-form-title').textContent = 'Изменить прокси: ' + proxy.name;
   $('proxy-form-cancel').hidden = false;
-  form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  form.name.focus();
+  openPanel('proxy-form-card');
 }
 
 function resetProxyForm() {
@@ -897,6 +951,7 @@ function resetProxyForm() {
   $('proxy-form').reset();
   $('proxy-form-title').textContent = 'Добавить прокси';
   $('proxy-form-cancel').hidden = true;
+  closePanel('proxy-form-card');
 }
 
 $('proxy-form-cancel').onclick = resetProxyForm;
@@ -1088,7 +1143,7 @@ function startListEdit(list) {
   $('list-form-title').textContent = 'Изменить лист: ' + list.name;
   $('list-form-cancel').hidden = false;
   $('list-rename-hint').hidden = false;
-  form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  openPanel('list-form-card');
 }
 
 function resetListForm() {
@@ -1099,6 +1154,7 @@ function resetListForm() {
   $('list-form-title').textContent = 'Создать лист';
   $('list-form-cancel').hidden = true;
   $('list-rename-hint').hidden = true;
+  closePanel('list-form-card');
 }
 
 $('list-form-cancel').onclick = resetListForm;
@@ -1179,7 +1235,7 @@ function startRuleEdit(rule) {
   form.ban_duration.value = rule.ban_duration || '';
   $('rule-form-title').textContent = 'Изменить правило: ' + rule.pattern;
   $('rule-form-cancel').hidden = false;
-  form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  openPanel('rule-form-card');
 }
 
 function resetRuleForm() {
@@ -1187,6 +1243,7 @@ function resetRuleForm() {
   $('rule-form').reset();
   $('rule-form-title').textContent = 'Добавить правило';
   $('rule-form-cancel').hidden = true;
+  closePanel('rule-form-card');
 }
 
 $('rule-form-cancel').onclick = resetRuleForm;

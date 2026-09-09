@@ -213,6 +213,11 @@ h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: v
 
 .card > h2 { margin-bottom: 14px; }
 
+/* Раскрывающаяся форма над таблицей: отмечена полосой слева, чтобы было
+   видно, что это временная панель, а не постоянная часть страницы. */
+.panel { border-left: 3px solid var(--accent); }
+.page-head button[data-panel].open { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-strong); }
+
 .card-head {
   display: flex;
   align-items: baseline;

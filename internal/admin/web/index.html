@@ -180,44 +180,22 @@
     <div class="page-head">
       <h1>Прокси</h1>
       <span class="spacer"></span>
+      <button class="primary" data-panel="proxy-form-card">Добавить прокси</button>
+      <button data-panel="import-card">Импорт списком</button>
       <button class="ghost reload-config">Перечитать файл</button>
     </div>
     <p class="page-lead">Апстримы, через которые уходит трафик. Сами по себе они
       никуда не назначаются: сначала собираются в лист, а лист уже привязывается
       к домену. Файл: <code class="config-note">config.json</code></p>
 
-    <div class="card">
+    <!-- Формы свёрнуты над таблицей: с полусотней прокси крутить до формы
+         внизу пришлось бы каждый раз. -->
+    <div class="card panel" id="proxy-form-card" hidden>
       <div class="card-head">
-        <h2>Заведённые прокси</h2>
-        <span class="hint" id="proxy-count"></span>
-        <input class="filter" id="proxy-filter" type="search" placeholder="Поиск: имя, адрес, страна, комментарий">
-      </div>
-      <div class="bulk" id="bulk-bar" hidden>
-        <span class="bulk-count">Отмечено <b id="bulk-count">0</b></span>
-        <input list="list-names" id="bulk-list" placeholder="имя листа">
-        <datalist id="list-names"></datalist>
-        <button type="button" id="bulk-add" class="small">В лист</button>
-        <button type="button" id="bulk-remove" class="ghost small">Убрать из листа</button>
+        <h2 id="proxy-form-title">Добавить прокси</h2>
         <span class="spacer"></span>
-        <button type="button" id="bulk-delete" class="ghost danger small">Удалить отмеченные</button>
-        <button type="button" id="bulk-clear" class="ghost small">Снять отметки</button>
+        <button type="button" class="ghost small" data-close="proxy-form-card">Закрыть</button>
       </div>
-      <div class="table-wrap">
-        <table id="cfg-proxies">
-          <thead>
-            <tr>
-              <th class="check"><input type="checkbox" id="proxy-check-all" title="Отметить все показанные"></th>
-              <th>Имя</th><th>Схема</th><th>Адрес</th><th class="num">Порт</th>
-              <th>Логин</th><th>Страна</th><th>В листах</th><th>Комментарий</th><th></th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2 id="proxy-form-title">Добавить прокси</h2>
       <form id="proxy-form">
         <div class="fields">
           <label class="field">Имя
@@ -260,8 +238,12 @@
       </form>
     </div>
 
-    <div class="card">
-      <h2>Импорт списком</h2>
+    <div class="card panel" id="import-card" hidden>
+      <div class="card-head">
+        <h2>Импорт списком</h2>
+        <span class="spacer"></span>
+        <button type="button" class="ghost small" data-close="import-card">Закрыть</button>
+      </div>
       <p class="hint">По одной строке на прокси. Понимает форматы
         <code>1.2.3.4:1080</code>, <code>1.2.3.4:1080:логин:пароль</code>,
         <code>логин:пароль@1.2.3.4:1080</code> и строку со схемой целиком.
@@ -296,6 +278,36 @@
       </form>
       <div id="import-result" hidden></div>
     </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Заведённые прокси</h2>
+        <span class="hint" id="proxy-count"></span>
+        <input class="filter" id="proxy-filter" type="search" placeholder="Поиск: имя, адрес, страна, комментарий">
+      </div>
+      <div class="bulk" id="bulk-bar" hidden>
+        <span class="bulk-count">Отмечено <b id="bulk-count">0</b></span>
+        <input list="list-names" id="bulk-list" placeholder="имя листа">
+        <datalist id="list-names"></datalist>
+        <button type="button" id="bulk-add" class="small">В лист</button>
+        <button type="button" id="bulk-remove" class="ghost small">Убрать из листа</button>
+        <span class="spacer"></span>
+        <button type="button" id="bulk-delete" class="ghost danger small">Удалить отмеченные</button>
+        <button type="button" id="bulk-clear" class="ghost small">Снять отметки</button>
+      </div>
+      <div class="table-wrap">
+        <table id="cfg-proxies">
+          <thead>
+            <tr>
+              <th class="check"><input type="checkbox" id="proxy-check-all" title="Отметить все показанные"></th>
+              <th>Имя</th><th>Схема</th><th>Адрес</th><th class="num">Порт</th>
+              <th>Логин</th><th>Страна</th><th>В листах</th><th>Комментарий</th><th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
   </div>
 
   <!-- Листы -->
@@ -303,28 +315,19 @@
     <div class="page-head">
       <h1>Листы</h1>
       <span class="spacer"></span>
+      <button class="primary" data-panel="list-form-card">Создать лист</button>
       <button class="ghost reload-config">Перечитать файл</button>
     </div>
     <p class="page-lead">Лист — набор прокси, который назначается домену.
       Внутри листа Fairway сам выбирает, через какой прокси идти, и перестраивает
       выбор по замерам.</p>
 
-    <div class="card">
+    <div class="card panel" id="list-form-card" hidden>
       <div class="card-head">
-        <h2>Листы</h2>
-        <span class="hint" id="list-count"></span>
-        <input class="filter" id="list-filter" type="search" placeholder="Поиск: имя листа или прокси в нём">
+        <h2 id="list-form-title">Создать лист</h2>
+        <span class="spacer"></span>
+        <button type="button" class="ghost small" data-close="list-form-card">Закрыть</button>
       </div>
-      <div class="table-wrap">
-        <table id="cfg-lists">
-          <thead><tr><th>Лист</th><th>Прокси</th><th class="num">Штук</th><th>Используется</th><th></th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2 id="list-form-title">Создать лист</h2>
       <form id="list-form">
         <div class="fields">
           <label class="field field-wide">Имя листа
@@ -350,6 +353,20 @@
         </div>
       </form>
     </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Листы</h2>
+        <span class="hint" id="list-count"></span>
+        <input class="filter" id="list-filter" type="search" placeholder="Поиск: имя листа или прокси в нём">
+      </div>
+      <div class="table-wrap">
+        <table id="cfg-lists">
+          <thead><tr><th>Лист</th><th>Прокси</th><th class="num">Штук</th><th>Используется</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
   </div>
 
   <!-- Домены -->
@@ -357,35 +374,20 @@
     <div class="page-head">
       <h1>Домены</h1>
       <span class="spacer"></span>
+      <button class="primary" data-panel="rule-form-card">Добавить правило</button>
+      <button data-panel="defaults-card">Общие настройки</button>
       <button class="ghost reload-config">Перечитать файл</button>
     </div>
     <p class="page-lead">Правило говорит, каким листом обслуживать домен.
       Подбор идёт от частного к общему: точное имя → самый длинный
       <code>*.суффикс</code> → <code>*</code> → общие настройки.</p>
 
-    <div class="card">
+    <div class="card panel" id="rule-form-card" hidden>
       <div class="card-head">
-        <h2>Правила</h2>
-        <span class="hint" id="rule-count"></span>
-        <input class="filter" id="rule-filter" type="search" placeholder="Поиск: паттерн или лист">
+        <h2 id="rule-form-title">Добавить правило</h2>
+        <span class="spacer"></span>
+        <button type="button" class="ghost small" data-close="rule-form-card">Закрыть</button>
       </div>
-      <div class="table-wrap">
-        <table id="cfg-domains">
-          <thead>
-            <tr>
-              <th>Паттерн</th><th>Лист</th><th>TLS</th>
-              <th class="num" title="Сколько разных прокси листа работают на домен одновременно">Прокси разом</th>
-              <th class="num" title="Сколько соединений держит один прокси">Соединений</th>
-              <th>Бан</th><th></th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2 id="rule-form-title">Добавить правило</h2>
       <form id="rule-form">
         <div class="fields">
           <label class="field field-wide">Паттерн
@@ -416,8 +418,12 @@
       </form>
     </div>
 
-    <div class="card">
-      <h2>Общие настройки</h2>
+    <div class="card panel" id="defaults-card" hidden>
+      <div class="card-head">
+        <h2>Общие настройки</h2>
+        <span class="spacer"></span>
+        <button type="button" class="ghost small" data-close="defaults-card">Закрыть</button>
+      </div>
       <p class="hint">Действуют для доменов без своего правила и подставляются в правила там,
         где стоит ноль.</p>
       <form id="defaults-form">
@@ -445,6 +451,27 @@
             и это правильнее, чем молча уйти с вашего реального IP.</span>
         </div>
       </form>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Правила</h2>
+        <span class="hint" id="rule-count"></span>
+        <input class="filter" id="rule-filter" type="search" placeholder="Поиск: паттерн или лист">
+      </div>
+      <div class="table-wrap">
+        <table id="cfg-domains">
+          <thead>
+            <tr>
+              <th>Паттерн</th><th>Лист</th><th>TLS</th>
+              <th class="num" title="Сколько разных прокси листа работают на домен одновременно">Прокси разом</th>
+              <th class="num" title="Сколько соединений держит один прокси">Соединений</th>
+              <th>Бан</th><th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
