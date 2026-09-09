@@ -46,7 +46,7 @@ func (u *Upstream) Transport(dialTimeout time.Duration) *http.Transport {
 		tr := &http.Transport{
 			// Сжатие и разжатие — дело клиента и сайта, прокси передаёт как есть.
 			DisableCompression:    true,
-			MaxIdleConnsPerHost:   64,
+			MaxIdleConnsPerHost:   256,
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   dialTimeout,
 			ExpectContinueTimeout: time.Second,

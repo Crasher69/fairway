@@ -180,14 +180,20 @@ zones. Publish the panel only on `127.0.0.1`.
 
 ## Performance
 
-On a local stand (everything on one Windows machine): **~36,000 requests per
-second and ~700 MB/s** through CONNECT tunnels; 1,000 concurrent tunnels
-run on 2,068 goroutines and 88 MB of heap.
+On a local stand (everything on one Windows machine, 20 KB responses, one
+pass through fairway with a `direct` upstream):
 
-Plain HTTP goes through a pool of keep-alive connections to the upstream:
-**~14,000 requests per second** on 1,000 connections. It is still slower
-than tunnels because every request is parsed as HTTP, while a tunnel only
-copies bytes. Details and method in [docs/BENCHMARK.md](docs/BENCHMARK.md).
+| mode | 100 connections | 500 connections |
+|---|---|---|
+| CONNECT tunnels | 65,000 req/s, 1.2 GB/s | 61,000 req/s |
+| plain HTTP | 37,000 req/s, 700 MB/s | 33,000 req/s |
+| MITM (decrypting) | 6,900 req/s, 130 MB/s | 6,700 req/s |
+
+Tunnels cost two goroutines and about 40 KB of heap each; 500 MITM tunnels
+take 157 MB because of TLS buffers on both sides. Plain HTTP goes through a
+pool of keep-alive connections to the target. The stand is built entirely
+from this repository (`cmd/benchtarget`, `cmd/loadgen`); method and details
+in [docs/BENCHMARK.md](docs/BENCHMARK.md).
 
 ## Building
 

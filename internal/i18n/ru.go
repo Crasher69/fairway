@@ -35,6 +35,7 @@ var ru = map[string]string{
 	"admin panel failed to start: %v":                                                          "админка не поднялась: %v",
 	"admin panel: http://%s/?token=%s":                                                         "админка: http://%s/?token=%s",
 	"language: %s":                                                                             "язык: %s",
+	"WARNING: -insecure-origin is set — target certificates are not verified in MITM mode":     "ВНИМАНИЕ: задан -insecure-origin — сертификаты целей в режиме MITM не проверяются",
 	"unknown language %q (supported: %v)":                                                      "неизвестный язык %q (поддерживаются: %v)",
 
 	// --- конфиг ---

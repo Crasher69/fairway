@@ -18,3 +18,7 @@ config.local.json
 
 # релизные сборки
 /dist/
+
+# внутренние заметки, не для репозитория
+/CLAUDE.md
+/docs/ROADMAP.md

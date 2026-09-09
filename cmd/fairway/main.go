@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -59,6 +60,7 @@ func main() {
 		adminTokenFlag = flag.String("admin-token", "", "admin panel access token; empty — generate a random one")
 		historySize    = flag.Int("history", stats.DefaultCapacity, "how many recent requests to keep for the panel")
 		verbose        = flag.Bool("v", false, "log every request")
+		insecureOrigin = flag.Bool("insecure-origin", false, "MITM: do not verify target certificates (lab stands only — a spoofed target goes unnoticed)")
 	)
 	flag.Var(&upstreams, "upstream", "upstream scheme://user:pass@host:port bypassing the config; repeatable")
 	flag.Parse()
@@ -133,6 +135,13 @@ func main() {
 				logSample(logger, s)
 			}
 		},
+	}
+	// Без проверки сертификата цели MITM превращается в слепое доверие
+	// любому, кто встанет между прокси и сайтом. Только для стендов с
+	// самоподписанными целями, и с предупреждением в логе.
+	if *insecureOrigin {
+		srv.OriginTLS = &tls.Config{InsecureSkipVerify: true}
+		logger.Print(i18n.T("WARNING: -insecure-origin is set — target certificates are not verified in MITM mode"))
 	}
 
 	readConfig := func() *config.Config { return currentConfig.Load().(*config.Config) }
