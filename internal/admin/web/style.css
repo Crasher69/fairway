@@ -286,6 +286,8 @@ h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: v
 
 .domain-panel { position: sticky; top: 76px; padding: 14px; }
 .domain-panel .card-head { margin-bottom: 8px; padding: 0 4px; }
+.domain-filter { width: 100%; min-width: 0; margin-bottom: 8px; }
+#domains-empty { padding: 6px 10px; margin: 0; }
 
 #domain-list { list-style: none; margin: 0; padding: 0; }
 

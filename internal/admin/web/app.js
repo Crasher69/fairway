@@ -14,6 +14,10 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
+// Строки поиска по спискам и таблицам. Объявлены здесь, а не в разделе
+// настроек: список доменов на мониторинге тоже фильтруется.
+const filters = { proxy: '', list: '', rule: '', members: '', domain: '' };
+
 // --- тема ---
 
 const THEME_KEY = 'fairway-theme';
@@ -146,13 +150,26 @@ function renderOnboarding() {
 async function refreshDomains() {
   const rows = await api('api/domains');
   state.domainRows = rows;
-  const list = $('domain-list');
   $('domains-hint').hidden = rows.length > 0;
   $('domains').textContent = rows.length;
-  $('domains-count').textContent = rows.length ? `${rows.length}` : '';
   renderOnboarding();
+  renderDomainList();
+}
 
-  list.replaceChildren(...rows.map((row) => {
+// renderDomainList рисует список с учётом поиска. Список перерисовывается
+// каждые две секунды, поэтому строка поиска живёт в filters, а не в DOM.
+// Выбранный домен показывается всегда: иначе, набрав поиск, человек терял
+// бы из виду то, что сейчас открыто справа.
+function renderDomainList() {
+  const rows = state.domainRows;
+  const list = $('domain-list');
+  const shown = rows.filter((row) => row.domain === state.domain || matches(filters.domain, row.domain));
+  $('domain-filter').hidden = rows.length === 0;
+  $('domains-count').textContent = !rows.length ? ''
+    : shown.length === rows.length ? `${rows.length}` : `${shown.length} из ${rows.length}`;
+  $('domains-empty').hidden = !rows.length || shown.length > 0;
+
+  list.replaceChildren(...shown.map((row) => {
     const li = document.createElement('li');
     li.className = row.domain === state.domain ? 'active' : '';
 
@@ -621,9 +638,6 @@ let settings = { proxies: [], lists: [], domains: [], defaults: {} };
 // Что сейчас редактируется. null — форма в режиме добавления.
 const editing = { proxy: null, list: null, rule: null };
 
-// Строки поиска по таблицам. Когда прокси станет полсотни, глазами их
-// не найти, а листать длинную таблицу бессмысленно.
-const filters = { proxy: '', list: '', rule: '', members: '' };
 
 // Отмеченные галочками прокси — для массовых действий.
 const checked = new Set();
@@ -647,6 +661,7 @@ bindFilter('proxy-filter', 'proxy', () => renderProxyTable());
 bindFilter('list-filter', 'list', () => renderListTable());
 bindFilter('rule-filter', 'rule', () => renderRuleTable());
 bindFilter('members-filter', 'members', () => renderListMembers(selectedMembers()));
+bindFilter('domain-filter', 'domain', renderDomainList);
 
 const number = (value) => (value === '' ? 0 : Number(value));
 
