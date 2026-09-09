@@ -6,11 +6,12 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"fmt"
 	"net"
 	"strings"
 	"sync"
 	"time"
+
+	"fairway/internal/i18n"
 )
 
 // maxCachedCerts — предел кэша выпущенных сертификатов. Выпуск на ECDSA
@@ -64,7 +65,7 @@ func (i *Issuer) ServerConfig(fallbackHost string) *tls.Config {
 func (i *Issuer) Certificate(host string) (*tls.Certificate, error) {
 	host = normalizeHost(host)
 	if host == "" {
-		return nil, fmt.Errorf("пустое имя хоста")
+		return nil, i18n.Errorf("empty host name")
 	}
 
 	i.mu.Lock()
@@ -134,7 +135,7 @@ func (i *Issuer) issue(host string) (*tls.Certificate, error) {
 
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, i.ca.cert, &i.ca.leafKey.PublicKey, i.ca.key)
 	if err != nil {
-		return nil, fmt.Errorf("выпуск сертификата для %s: %w", host, err)
+		return nil, i18n.Errorf("issuing certificate for %s: %w", host, err)
 	}
 	leaf, err := x509.ParseCertificate(der)
 	if err != nil {

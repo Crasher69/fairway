@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"fairway/internal/i18n"
 )
 
 // ParseProxyLine разбирает одну строку из списка прокси.
@@ -20,7 +22,7 @@ import (
 func ParseProxyLine(line, defaultScheme string) (Proxy, error) {
 	line = strings.TrimSpace(line)
 	if line == "" {
-		return Proxy{}, fmt.Errorf("пустая строка")
+		return Proxy{}, i18n.Errorf("empty line")
 	}
 
 	scheme := defaultScheme
@@ -45,24 +47,24 @@ func ParseProxyLine(line, defaultScheme string) (Proxy, error) {
 	case 4:
 		// host:port:login:pass — только если креды не пришли через @
 		if login != "" {
-			return Proxy{}, fmt.Errorf("логин указан дважды")
+			return Proxy{}, i18n.Errorf("login given twice")
 		}
 		login, password = parts[2], parts[3]
 		parts = parts[:2]
 	default:
-		return Proxy{}, fmt.Errorf("не разобрать: ожидается host:port, host:port:логин:пароль или строка со схемой")
+		return Proxy{}, i18n.Errorf("cannot parse: expected host:port, host:port:login:password or a URL with a scheme")
 	}
 
 	host := strings.TrimSpace(parts[0])
 	if host == "" {
-		return Proxy{}, fmt.Errorf("не указан адрес")
+		return Proxy{}, i18n.Errorf("no address")
 	}
 	port, err := strconv.Atoi(strings.TrimSpace(parts[1]))
 	if err != nil {
-		return Proxy{}, fmt.Errorf("порт %q: не число", parts[1])
+		return Proxy{}, i18n.Errorf("port %q: not a number", parts[1])
 	}
 	if port <= 0 || port > 65535 {
-		return Proxy{}, fmt.Errorf("порт %d вне диапазона", port)
+		return Proxy{}, i18n.Errorf("port %d out of range", port)
 	}
 
 	return Proxy{
@@ -126,7 +128,7 @@ func (c *Config) ImportProxies(text, scheme, prefix, country, comment string) Im
 		}
 		address := fmt.Sprintf("%s:%d", proxy.Host, proxy.Port)
 		if addresses[address] {
-			issue.Reason = "такой адрес уже заведён"
+			issue.Reason = i18n.T("this address already exists")
 			result.Skipped = append(result.Skipped, issue)
 			continue
 		}

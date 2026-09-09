@@ -3,10 +3,11 @@ package rating
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"time"
+
+	"fairway/internal/i18n"
 )
 
 // snapshotFile — формат файла с рейтингами на диске.
@@ -58,7 +59,7 @@ func (r *Registry) Load(path string) error {
 	}
 	var file snapshotFile
 	if err := json.Unmarshal(raw, &file); err != nil {
-		return fmt.Errorf("разбор рейтингов %s: %w", path, err)
+		return i18n.Errorf("parsing ratings %s: %w", path, err)
 	}
 
 	now := r.now()

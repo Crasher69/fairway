@@ -19,6 +19,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"fairway/internal/i18n"
 )
 
 const (
@@ -79,7 +81,7 @@ func load(certPath, keyPath string) (*CA, error) {
 
 	certBlock, _ := pem.Decode(certPEM)
 	if certBlock == nil || certBlock.Type != "CERTIFICATE" {
-		return nil, fmt.Errorf("%s: это не PEM-сертификат", certPath)
+		return nil, i18n.Errorf("%s: not a PEM certificate", certPath)
 	}
 	cert, err := x509.ParseCertificate(certBlock.Bytes)
 	if err != nil {
@@ -88,7 +90,7 @@ func load(certPath, keyPath string) (*CA, error) {
 
 	keyBlock, _ := pem.Decode(keyPEM)
 	if keyBlock == nil {
-		return nil, fmt.Errorf("%s: это не PEM-ключ", keyPath)
+		return nil, i18n.Errorf("%s: not a PEM key", keyPath)
 	}
 	key, err := x509.ParseECPrivateKey(keyBlock.Bytes)
 	if err != nil {

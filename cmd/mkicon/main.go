@@ -22,8 +22,8 @@ import (
 )
 
 func main() {
-	root := flag.String("root", ".", "корень репозитория")
-	ico := flag.String("ico", "", "дополнительно сохранить .ico по этому пути")
+	root := flag.String("root", ".", "repository root")
+	ico := flag.String("ico", "", "additionally write an .ico to this path")
 	flag.Parse()
 
 	write := func(rel string, data []byte) {
@@ -31,7 +31,7 @@ func main() {
 		if err := os.WriteFile(path, data, 0o644); err != nil {
 			log.Fatalf("%s: %v", rel, err)
 		}
-		fmt.Printf("  %s (%d байт)\n", rel, len(data))
+		fmt.Printf("  %s (%d bytes)\n", rel, len(data))
 	}
 
 	for _, m := range brand.Machines {

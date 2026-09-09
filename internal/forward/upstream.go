@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"golang.org/x/net/proxy"
+
+	"fairway/internal/i18n"
 )
 
 // Upstream — апстрим-прокси, через который уходит трафик.
@@ -98,7 +100,7 @@ func ParseUpstream(raw string) (*Upstream, error) {
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return nil, fmt.Errorf("апстрим %q: %w", raw, err)
+		return nil, i18n.Errorf("upstream %q: %w", raw, err)
 	}
 
 	scheme := u.Scheme
@@ -106,10 +108,10 @@ func ParseUpstream(raw string) (*Upstream, error) {
 		scheme = "socks5"
 	}
 	if _, ok := defaultPorts[scheme]; !ok {
-		return nil, fmt.Errorf("апстрим %q: неподдерживаемая схема %q", raw, u.Scheme)
+		return nil, i18n.Errorf("upstream %q: unsupported scheme %q", raw, u.Scheme)
 	}
 	if u.Hostname() == "" {
-		return nil, fmt.Errorf("апстрим %q: не указан хост", raw)
+		return nil, i18n.Errorf("upstream %q: no host", raw)
 	}
 
 	addr := u.Host
@@ -145,19 +147,19 @@ func (u *Upstream) ProxyAuthorization() string {
 // Для схемы https поверх TCP поднимается TLS.
 func (u *Upstream) DialProxy(ctx context.Context) (net.Conn, error) {
 	if u.Scheme == "direct" {
-		return nil, errors.New("direct: нет прокси, к которому подключаться")
+		return nil, errors.New("direct: no proxy to connect to")
 	}
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", u.Addr)
 	if err != nil {
-		return nil, fmt.Errorf("подключение к прокси %s: %w", u.Addr, err)
+		return nil, i18n.Errorf("connecting to proxy %s: %w", u.Addr, err)
 	}
 	if u.Scheme == "https" {
 		host, _, _ := net.SplitHostPort(u.Addr)
 		tlsConn := tlsClient(conn, host)
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
 			conn.Close()
-			return nil, fmt.Errorf("TLS к прокси %s: %w", u.Addr, err)
+			return nil, i18n.Errorf("TLS to proxy %s: %w", u.Addr, err)
 		}
 		return tlsConn, nil
 	}
@@ -183,7 +185,7 @@ func (u *Upstream) DialTarget(ctx context.Context, target string) (net.Conn, err
 		}
 		cd, ok := d.(proxy.ContextDialer)
 		if !ok {
-			return nil, fmt.Errorf("socks5 %s: диалер не поддерживает контекст", u.Addr)
+			return nil, i18n.Errorf("socks5 %s: dialer does not support context", u.Addr)
 		}
 		return cd.DialContext(ctx, "tcp", target)
 
@@ -199,7 +201,7 @@ func (u *Upstream) DialTarget(ctx context.Context, target string) (net.Conn, err
 		}
 		return tunneled, nil
 	}
-	return nil, fmt.Errorf("неизвестная схема апстрима %q", u.Scheme)
+	return nil, i18n.Errorf("unknown upstream scheme %q", u.Scheme)
 }
 
 // connectTunnel проводит CONNECT-рукопожатие с HTTP-прокси.
@@ -219,17 +221,17 @@ func (u *Upstream) connectTunnel(ctx context.Context, conn net.Conn, target stri
 		req.Header.Set("Proxy-Authorization", auth)
 	}
 	if err := req.Write(conn); err != nil {
-		return nil, fmt.Errorf("CONNECT %s через %s: %w", target, u.Name, err)
+		return nil, i18n.Errorf("CONNECT %s via %s: %w", target, u.Name, err)
 	}
 
 	br := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(br, req)
 	if err != nil {
-		return nil, fmt.Errorf("ответ на CONNECT %s через %s: %w", target, u.Name, err)
+		return nil, i18n.Errorf("CONNECT response %s via %s: %w", target, u.Name, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("CONNECT %s через %s: апстрим ответил %s", target, u.Name, resp.Status)
+		return nil, i18n.Errorf("CONNECT %s via %s: upstream answered %s", target, u.Name, resp.Status)
 	}
 
 	// Апстрим мог прислать байты туннеля в том же чтении — их нельзя потерять.

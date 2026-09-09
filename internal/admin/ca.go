@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"fairway/internal/i18n"
 	"fairway/internal/mitmca"
 )
 
@@ -16,7 +17,7 @@ type caResponse struct {
 
 func (s *Server) caInfo(w http.ResponseWriter, r *http.Request) {
 	if s.CA == nil {
-		http.Error(w, "корневой сертификат недоступен", http.StatusNotFound)
+		http.Error(w, i18n.T("root certificate is unavailable"), http.StatusNotFound)
 		return
 	}
 	writeJSON(w, caResponse{
@@ -34,11 +35,11 @@ func (s *Server) caInfo(w http.ResponseWriter, r *http.Request) {
 // только в пользовательское хранилище, права администратора не нужны.
 func (s *Server) caInstall(w http.ResponseWriter, r *http.Request) {
 	if s.CA == nil {
-		http.Error(w, "корневой сертификат недоступен", http.StatusNotFound)
+		http.Error(w, i18n.T("root certificate is unavailable"), http.StatusNotFound)
 		return
 	}
 	if err := s.CA.Install(); err != nil {
-		http.Error(w, "не удалось установить: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, i18n.T("install failed: ")+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	s.caInfo(w, r)
@@ -46,11 +47,11 @@ func (s *Server) caInstall(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) caUninstall(w http.ResponseWriter, r *http.Request) {
 	if s.CA == nil {
-		http.Error(w, "корневой сертификат недоступен", http.StatusNotFound)
+		http.Error(w, i18n.T("root certificate is unavailable"), http.StatusNotFound)
 		return
 	}
 	if err := s.CA.Uninstall(); err != nil {
-		http.Error(w, "не удалось удалить: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, i18n.T("uninstall failed: ")+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	s.caInfo(w, r)

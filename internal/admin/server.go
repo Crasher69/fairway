@@ -6,7 +6,6 @@ package admin
 
 import (
 	"encoding/json"
-	"fmt"
 	"math"
 	"net"
 	"net/http"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"fairway/internal/config"
+	"fairway/internal/i18n"
 	"fairway/internal/mitmca"
 	"fairway/internal/proxypool"
 	"fairway/internal/rating"
@@ -67,6 +67,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/domains", s.saveDomain)
 	mux.HandleFunc("DELETE /api/domains/{pattern}", s.deleteDomain)
 	mux.HandleFunc("PUT /api/defaults", s.saveDefaults)
+	mux.HandleFunc("PUT /api/language", s.saveLanguage)
 	mux.HandleFunc("GET /api/ca", s.caInfo)
 	mux.HandleFunc("POST /api/ca/install", s.caInstall)
 	mux.HandleFunc("POST /api/ca/uninstall", s.caUninstall)
@@ -113,7 +114,7 @@ func (s *Server) authorized(next http.Handler) http.Handler {
 				return
 			}
 		}
-		http.Error(w, "нужен токен: ?token=… или заголовок Authorization: Bearer …", http.StatusUnauthorized)
+		http.Error(w, i18n.T("token required: ?token=… or header Authorization: Bearer …"), http.StatusUnauthorized)
 	})
 }
 
@@ -134,8 +135,11 @@ type overviewResponse struct {
 	// понимать, дойдёт ли трафик до прокси без единого правила.
 	DefaultList string `json:"default_list"`
 	AllowDirect bool   `json:"allow_direct"`
-	CertsCache  int    `json:"certs_cached"`
-	Watchers    int    `json:"watchers"`
+	// Language — действующий язык процесса; панель подстраивается под него.
+	Language   string   `json:"language"`
+	Languages  []string `json:"languages"`
+	CertsCache int      `json:"certs_cached"`
+	Watchers   int      `json:"watchers"`
 	// Рантайм пригождается в проде: по числу горутин видно утечку соединений,
 	// по куче — не пора ли поднимать лимиты.
 	Goroutines int     `json:"goroutines"`
@@ -156,6 +160,10 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		ProxyAddr:   s.ProxyAddr,
 		DefaultList: cfg.Defaults.List,
 		AllowDirect: cfg.Defaults.AllowDirect,
+		Language:    string(i18n.Current()),
+	}
+	for _, l := range i18n.Supported() {
+		resp.Languages = append(resp.Languages, string(l))
 	}
 	if s.Editor != nil {
 		resp.ConfigPath = s.Editor.Path
@@ -321,7 +329,7 @@ func (s *Server) domain(w http.ResponseWriter, r *http.Request) {
 		}
 		if now.Before(st.BannedUntil) {
 			row.Banned = true
-			row.Status = "забанен"
+			row.Status = "banned"
 		} else if alive > 0 {
 			// Разведка раздаёт epsilon поровну, остальное — по весу.
 			row.Share = epsilon / float64(alive)
@@ -350,7 +358,7 @@ func (s *Server) domain(w http.ResponseWriter, r *http.Request) {
 func (s *Server) unban(w http.ResponseWriter, r *http.Request) {
 	domain, proxy := r.PathValue("domain"), r.PathValue("proxy")
 	if !s.Ratings.Unban(domain, proxy) {
-		http.Error(w, fmt.Sprintf("прокси %s для %s не забанен", proxy, domain), http.StatusNotFound)
+		http.Error(w, i18n.Sprintf("proxy %s is not banned for %s", proxy, domain), http.StatusNotFound)
 		return
 	}
 	s.domain(w, r)
@@ -360,13 +368,13 @@ func (s *Server) unban(w http.ResponseWriter, r *http.Request) {
 func statusOf(st rating.Snapshot) string {
 	switch {
 	case st.Samples == 0:
-		return "не проверен"
+		return "untested"
 	case st.ErrorRate > 0.25:
-		return "деградирует"
+		return "degraded"
 	case st.Samples < 3:
-		return "разведка"
+		return "probing"
 	default:
-		return "ок"
+		return "ok"
 	}
 }
 
@@ -396,7 +404,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "поток не поддерживается", http.StatusInternalServerError)
+		http.Error(w, i18n.T("streaming is not supported"), http.StatusInternalServerError)
 		return
 	}
 	domain := r.URL.Query().Get("domain")
@@ -450,7 +458,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 // на машину, с которой уже открыта панель.
 func (s *Server) downloadCA(w http.ResponseWriter, r *http.Request) {
 	if s.CA == nil {
-		http.Error(w, "корневой сертификат недоступен", http.StatusNotFound)
+		http.Error(w, i18n.T("root certificate is unavailable"), http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", "application/x-pem-file")

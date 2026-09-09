@@ -3,11 +3,11 @@ package admin
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"sync"
 
 	"fairway/internal/config"
+	"fairway/internal/i18n"
 )
 
 // Editor меняет конфиг на диске и применяет его на лету.
@@ -32,7 +32,7 @@ type Editor struct {
 
 // ErrNoEditor означает, что запись не настроена (например, конфиг задан
 // флагами -upstream и файла нет).
-var ErrNoEditor = errors.New("правка конфига недоступна")
+var ErrNoEditor = errors.New("config editing is unavailable")
 
 // edit применяет изменение к копии конфига, проверяет и сохраняет.
 func (e *Editor) edit(change func(*config.Config) error) (*config.Config, error) {
@@ -66,7 +66,7 @@ func (e *Editor) edit(change func(*config.Config) error) (*config.Config, error)
 // cloneConfig делает глубокую копию: менять живой конфиг на месте нельзя,
 // его в этот момент читают обработчики запросов.
 func cloneConfig(src *config.Config) *config.Config {
-	dst := &config.Config{Defaults: src.Defaults}
+	dst := &config.Config{Defaults: src.Defaults, Language: src.Language}
 	dst.Proxies = append([]config.Proxy(nil), src.Proxies...)
 	dst.Lists = append([]config.List(nil), src.Lists...)
 	for i, l := range src.Lists {
@@ -96,7 +96,7 @@ func (s *Server) addProxy(w http.ResponseWriter, r *http.Request) {
 	s.applyEdit(w, func(cfg *config.Config) error {
 		for _, existing := range cfg.Proxies {
 			if existing.Name == body.Name {
-				return fmt.Errorf("прокси %q уже есть", body.Name)
+				return i18n.Errorf("proxy %q already exists", body.Name)
 			}
 		}
 		cfg.Proxies = append(cfg.Proxies, body)
@@ -121,11 +121,11 @@ func (s *Server) updateProxy(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if existing.Name == body.Name {
-				return fmt.Errorf("прокси %q уже есть", body.Name)
+				return i18n.Errorf("proxy %q already exists", body.Name)
 			}
 		}
 		if index < 0 {
-			return fmt.Errorf("прокси %q не найден", name)
+			return i18n.Errorf("proxy %q not found", name)
 		}
 		cfg.Proxies[index] = body
 		if body.Name != name {
@@ -159,7 +159,7 @@ func (s *Server) deleteProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		cfg.Proxies = kept
 		if len(cfg.Proxies) == before {
-			return fmt.Errorf("прокси %q не найден", name)
+			return i18n.Errorf("proxy %q not found", name)
 		}
 		return nil
 	})
@@ -200,11 +200,11 @@ func (s *Server) updateList(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if existing.Name == body.Name {
-				return fmt.Errorf("лист %q уже есть", body.Name)
+				return i18n.Errorf("list %q already exists", body.Name)
 			}
 		}
 		if index < 0 {
-			return fmt.Errorf("лист %q не найден", name)
+			return i18n.Errorf("list %q not found", name)
 		}
 		cfg.Lists[index] = body
 		if body.Name != name {
@@ -235,7 +235,7 @@ func (s *Server) bulkProxies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(body.Names) == 0 {
-		http.Error(w, "не отмечено ни одного прокси", http.StatusBadRequest)
+		http.Error(w, i18n.T("no proxies selected"), http.StatusBadRequest)
 		return
 	}
 	chosen := make(map[string]bool, len(body.Names))
@@ -250,7 +250,7 @@ func (s *Server) bulkProxies(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, n := range body.Names {
 			if !known[n] {
-				return fmt.Errorf("прокси %q не найден", n)
+				return i18n.Errorf("proxy %q not found", n)
 			}
 		}
 
@@ -270,7 +270,7 @@ func (s *Server) bulkProxies(w http.ResponseWriter, r *http.Request) {
 
 		case "add_to_list":
 			if body.List == "" {
-				return fmt.Errorf("не указан лист")
+				return i18n.Errorf("no list given")
 			}
 			for i, list := range cfg.Lists {
 				if list.Name != body.List {
@@ -295,7 +295,7 @@ func (s *Server) bulkProxies(w http.ResponseWriter, r *http.Request) {
 
 		case "remove_from_list":
 			if body.List == "" {
-				return fmt.Errorf("не указан лист")
+				return i18n.Errorf("no list given")
 			}
 			for i, list := range cfg.Lists {
 				if list.Name == body.List {
@@ -303,10 +303,10 @@ func (s *Server) bulkProxies(w http.ResponseWriter, r *http.Request) {
 					return nil
 				}
 			}
-			return fmt.Errorf("лист %q не найден", body.List)
+			return i18n.Errorf("list %q not found", body.List)
 
 		default:
-			return fmt.Errorf("неизвестное действие %q", body.Action)
+			return i18n.Errorf("unknown action %q", body.Action)
 		}
 	})
 }
@@ -335,7 +335,7 @@ func (s *Server) deleteList(w http.ResponseWriter, r *http.Request) {
 		}
 		cfg.Lists = kept
 		if !found {
-			return fmt.Errorf("лист %q не найден", name)
+			return i18n.Errorf("list %q not found", name)
 		}
 		return nil
 	})
@@ -372,7 +372,7 @@ func (s *Server) deleteDomain(w http.ResponseWriter, r *http.Request) {
 		}
 		cfg.Domains = kept
 		if !found {
-			return fmt.Errorf("правило %q не найдено", pattern)
+			return i18n.Errorf("rule %q not found", pattern)
 		}
 		return nil
 	})
@@ -389,6 +389,24 @@ func (s *Server) saveDefaults(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// saveLanguage переключает язык. Это правка конфига, как и любая другая:
+// поле сохраняется в файл, и после применения лог переходит на новый язык.
+func (s *Server) saveLanguage(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Language string `json:"language"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	s.applyEdit(w, func(cfg *config.Config) error {
+		if _, err := i18n.Parse(body.Language); err != nil {
+			return err
+		}
+		cfg.Language = body.Language
+		return nil
+	})
+}
+
 // reload перечитывает конфиг с диска и применяет его. Нужен, когда файл
 // правили руками и ждать опроса сторожа не хочется.
 func (s *Server) reload(w http.ResponseWriter, r *http.Request) {
@@ -398,11 +416,11 @@ func (s *Server) reload(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg, err := config.Load(s.Editor.Path)
 	if err != nil {
-		http.Error(w, "конфиг не перечитан: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, i18n.T("config not reloaded: ")+err.Error(), http.StatusBadRequest)
 		return
 	}
 	if err := s.Editor.Apply(cfg); err != nil {
-		http.Error(w, "конфиг не применён: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, i18n.T("config not applied: ")+err.Error(), http.StatusBadRequest)
 		return
 	}
 	writeJSON(w, cfg)
@@ -427,7 +445,7 @@ func decode(w http.ResponseWriter, r *http.Request, into any) bool {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(into); err != nil {
-		http.Error(w, "тело запроса: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, i18n.T("request body: ")+err.Error(), http.StatusBadRequest)
 		return false
 	}
 	return true
@@ -502,4 +520,4 @@ func (s *Server) importProxies(w http.ResponseWriter, r *http.Request) {
 
 // errNothingImported прерывает правку, когда добавлять нечего: сохранять
 // и применять конфиг в этом случае незачем.
-var errNothingImported = errors.New("ни одной строки не разобрано")
+var errNothingImported = errors.New("no lines parsed")

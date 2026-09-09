@@ -26,6 +26,7 @@ import (
 	"fairway/internal/admin"
 	"fairway/internal/config"
 	"fairway/internal/forward"
+	"fairway/internal/i18n"
 	"fairway/internal/mitmca"
 	"fairway/internal/proxypool"
 	"fairway/internal/rating"
@@ -46,20 +47,20 @@ func (l *upstreamList) Set(v string) error {
 func main() {
 	var upstreams upstreamList
 	var (
-		proxyAddr      = flag.String("proxy", ":8080", "адрес прокси-сервера")
-		adminAddr      = flag.String("admin", "127.0.0.1:8081", "адрес админки (только loopback по умолчанию)")
-		configPath     = flag.String("config", "config.json", "файл конфигурации; создаётся, если его нет")
-		dataDir        = flag.String("data", "./data", "каталог для CA и снапшотов рейтингов")
-		dialTimeout    = flag.Duration("dial-timeout", 15*time.Second, "таймаут подключения к цели через апстрим")
-		replayBody     = flag.Int64("replay-body", forward.DefaultReplayBodyLimit, "до какого размера (байт) буферизовать тело запроса в MITM ради повтора; -1 — не буферизовать")
-		pollInterval   = flag.Duration("config-poll", config.DefaultPollInterval, "как часто перечитывать конфиг")
-		ratingSave     = flag.Duration("ratings-save", 30*time.Second, "как часто сохранять рейтинги на диск")
-		exportCA       = flag.String("export-ca", "", "сохранить корневой сертификат в указанный файл и выйти")
-		adminTokenFlag = flag.String("admin-token", "", "токен доступа к админке; пустой — сгенерировать случайный")
-		historySize    = flag.Int("history", stats.DefaultCapacity, "сколько последних запросов держать для админки")
-		verbose        = flag.Bool("v", false, "писать в лог каждый запрос")
+		proxyAddr      = flag.String("proxy", ":8080", "proxy listen address")
+		adminAddr      = flag.String("admin", "127.0.0.1:8081", "admin panel address (loopback only by default)")
+		configPath     = flag.String("config", "config.json", "config file; created if missing")
+		dataDir        = flag.String("data", "./data", "directory for the CA and rating snapshots")
+		dialTimeout    = flag.Duration("dial-timeout", 15*time.Second, "timeout for connecting to the target via upstream")
+		replayBody     = flag.Int64("replay-body", forward.DefaultReplayBodyLimit, "buffer request bodies up to this size (bytes) in MITM mode so they can be replayed; -1 disables")
+		pollInterval   = flag.Duration("config-poll", config.DefaultPollInterval, "how often to re-read the config")
+		ratingSave     = flag.Duration("ratings-save", 30*time.Second, "how often to save ratings to disk")
+		exportCA       = flag.String("export-ca", "", "write the root certificate to this file and exit")
+		adminTokenFlag = flag.String("admin-token", "", "admin panel access token; empty — generate a random one")
+		historySize    = flag.Int("history", stats.DefaultCapacity, "how many recent requests to keep for the panel")
+		verbose        = flag.Bool("v", false, "log every request")
 	)
-	flag.Var(&upstreams, "upstream", "апстрим scheme://user:pass@host:port в обход конфига; можно повторять")
+	flag.Var(&upstreams, "upstream", "upstream scheme://user:pass@host:port bypassing the config; repeatable")
 	flag.Parse()
 
 	logger := log.New(os.Stderr, "", log.LstdFlags|log.Lmsgprefix)
@@ -68,17 +69,17 @@ func main() {
 	// хоть один прокси, — сертификат раскатывают по машинам заранее.
 	ca, err := mitmca.LoadOrCreate(*dataDir)
 	if err != nil {
-		logger.Fatalf("корневой сертификат: %v", err)
+		logger.Fatalf(i18n.T("root certificate: %v"), err)
 	}
 	if *exportCA != "" {
 		if err := ca.Export(*exportCA); err != nil {
-			logger.Fatalf("экспорт корневого сертификата: %v", err)
+			logger.Fatalf(i18n.T("exporting root certificate: %v"), err)
 		}
-		logger.Printf("корневой сертификат сохранён в %s", *exportCA)
-		logger.Print("импортируйте его в «Доверенные корневые центры» на машинах сети")
+		logger.Printf(i18n.T("root certificate saved to %s"), *exportCA)
+		logger.Print(i18n.T("import it into \"Trusted Root Certification Authorities\" on the machines of your network"))
 		return
 	}
-	logger.Printf("корневой CA: %s (до %s)", ca.Subject(), ca.NotAfter().Format("02.01.2006"))
+	logger.Printf(i18n.T("root CA: %s (valid until %s)"), ca.Subject(), ca.NotAfter().Format("2006-01-02"))
 
 	cfg, err := loadConfig(logger, *configPath, upstreams)
 	if err != nil {
@@ -88,6 +89,9 @@ func main() {
 	if err != nil {
 		logger.Fatal(err)
 	}
+	// Язык — из конфига, и переключается вместе с ним: панель меняет поле,
+	// конфиг применяется, и лог с этой строки идёт на новом языке.
+	i18n.Set(cfg.Lang())
 	currentConfig.Store(cfg)
 	describe(logger, cfg, pool)
 
@@ -102,16 +106,16 @@ func main() {
 		return 0
 	}
 	ratings.OnBan = func(domain, proxy, reason string, until time.Time) {
-		logger.Printf("бан: %s для %s (%s) до %s", proxy, domain, reason, until.Format("15:04:05"))
+		logger.Printf(i18n.T("ban: %s for %s (%s) until %s"), proxy, domain, reason, until.Format("15:04:05"))
 	}
 	pool.Select = ratings.Select
 
 	ratingsPath := filepath.Join(*dataDir, "ratings.json")
 	if err := ratings.Load(ratingsPath); err != nil {
-		logger.Printf("рейтинги не загружены: %v", err)
+		logger.Printf(i18n.T("ratings not loaded: %v"), err)
 	}
 	go ratings.Autosave(ctx, ratingsPath, *ratingSave,
-		func(err error) { logger.Printf("рейтинги не сохранены: %v", err) })
+		func(err error) { logger.Printf(i18n.T("ratings not saved: %v"), err) })
 
 	issuer := mitmca.NewIssuer(ca)
 	recorder := stats.New(*historySize)
@@ -135,6 +139,10 @@ func main() {
 	applyConfig := func(updated *config.Config) error {
 		if err := pool.Apply(updated); err != nil {
 			return err
+		}
+		if updated.Lang() != i18n.Current() {
+			i18n.Set(updated.Lang())
+			logger.Printf(i18n.T("language: %s"), updated.Lang())
 		}
 		currentConfig.Store(updated)
 		describe(logger, updated, pool)
@@ -168,17 +176,17 @@ func main() {
 		go watcher.Run(ctx,
 			func(updated *config.Config) {
 				if err := applyConfig(updated); err != nil {
-					logger.Printf("конфиг не применён: %v", err)
+					logger.Printf(i18n.T("config not applied: %v"), err)
 					return
 				}
-				logger.Print("конфиг перечитан")
+				logger.Print(i18n.T("config reloaded"))
 			},
-			func(err error) { logger.Printf("конфиг не перечитан: %v", err) },
+			func(err error) { logger.Printf(i18n.T("config not reloaded: %v"), err) },
 		)
 	}
 	startAdmin(ctx, logger, *adminAddr, adminSrv)
 
-	logger.Printf("fairway %s: прокси на %s, конфиг %s, данные в %s",
+	logger.Printf(i18n.T("fairway %s: proxy on %s, config %s, data in %s"),
 		version, *proxyAddr, *configPath, *dataDir)
 
 	httpSrv := &http.Server{
@@ -188,7 +196,7 @@ func main() {
 	}
 	go func() {
 		<-ctx.Done()
-		logger.Print("останавливаюсь")
+		logger.Print(i18n.T("shutting down"))
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = httpSrv.Shutdown(shutdownCtx)
@@ -217,14 +225,14 @@ func router(pool *proxypool.Pool) func(string) (*forward.Route, error) {
 
 func logSample(logger *log.Logger, s forward.Sample) {
 	if s.Err != nil {
-		logger.Printf("%s через %s: ОШИБКА %v (connect %s)", s.Domain, s.Upstream, s.Err, round(s.Connect))
+		logger.Printf(i18n.T("%s via %s: ERROR %v (connect %s)"), s.Domain, s.Upstream, s.Err, round(s.Connect))
 		return
 	}
 	captcha := ""
 	if s.Challenge != "" {
-		captcha = " КАПЧА " + s.Challenge + ","
+		captcha = " " + i18n.T("CAPTCHA") + " " + s.Challenge + ","
 	}
-	logger.Printf("%s через %s: статус %d,%s connect %s, ttfb %s, %d Б, %.0f Б/с, всего %s",
+	logger.Printf(i18n.T("%s via %s: status %d,%s connect %s, ttfb %s, %d B, %.0f B/s, total %s"),
 		s.Domain, s.Upstream, s.Status, captcha, round(s.Connect), round(s.TTFB),
 		s.Bytes, s.Throughput(), round(s.Duration))
 }
@@ -233,7 +241,7 @@ func logSample(logger *log.Logger, s forward.Sample) {
 // конфиг из них: удобно для быстрой проверки, файл при этом не трогается.
 func loadConfig(logger *log.Logger, path string, upstreams []string) (*config.Config, error) {
 	if len(upstreams) > 0 {
-		logger.Printf("заданы -upstream (%d шт.) — конфиг %s игнорируется", len(upstreams), path)
+		logger.Printf(i18n.T("-upstream given (%d) — config %s is ignored"), len(upstreams), path)
 		return configFromFlags(upstreams)
 	}
 	cfg, err := config.Load(path)
@@ -245,9 +253,9 @@ func loadConfig(logger *log.Logger, path string, upstreams []string) (*config.Co
 	}
 	example := config.Example()
 	if err := example.Save(path); err != nil {
-		return nil, fmt.Errorf("не удалось создать %s: %w", path, err)
+		return nil, i18n.Errorf("cannot create %s: %w", path, err)
 	}
-	logger.Printf("конфига не было — создал %s (пока пустой, работаю напрямую)", path)
+	logger.Printf(i18n.T("no config found — created %s (empty for now, running direct)"), path)
 	return example, nil
 }
 
@@ -268,20 +276,20 @@ func configFromFlags(upstreams []string) (*config.Config, error) {
 // когда запрос ушёл не через тот прокси, через который ожидал.
 func describe(logger *log.Logger, cfg *config.Config, pool *proxypool.Pool) {
 	proxies := pool.Proxies()
-	logger.Printf("прокси: %d, листов: %d, правил доменов: %d", len(proxies), len(cfg.Lists), len(cfg.Domains))
+	logger.Printf(i18n.T("proxies: %d, lists: %d, domain rules: %d"), len(proxies), len(cfg.Lists), len(cfg.Domains))
 	for _, p := range proxies {
-		logger.Printf("  прокси %s -> %s", p.Name, p.Upstream.Name)
+		logger.Printf(i18n.T("  proxy %s -> %s"), p.Name, p.Upstream.Name)
 	}
 	for _, d := range cfg.Domains {
-		logger.Printf("  домен %s -> лист %s", d.Pattern, d.List)
+		logger.Printf(i18n.T("  domain %s -> list %s"), d.Pattern, d.List)
 	}
 	switch {
 	case cfg.Defaults.List != "":
-		logger.Printf("  по умолчанию -> лист %s", cfg.Defaults.List)
+		logger.Printf(i18n.T("  default -> list %s"), cfg.Defaults.List)
 	case cfg.Defaults.AllowDirect:
-		logger.Print("  по умолчанию -> НАПРЯМУЮ: домены без правила пойдут с реального IP")
+		logger.Print(i18n.T("  default -> DIRECT: domains without a rule will go out from the real IP"))
 	default:
-		logger.Print("  по умолчанию -> отказ: домены без правила получат 503")
+		logger.Print(i18n.T("  default -> refuse: domains without a rule will get 503"))
 	}
 }
 
@@ -300,7 +308,7 @@ func adminToken(logger *log.Logger, given string) string {
 	}
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
-		logger.Fatalf("не удалось сгенерировать токен админки: %v", err)
+		logger.Fatalf(i18n.T("cannot generate admin token: %v"), err)
 	}
 	return hex.EncodeToString(buf)
 }
@@ -308,7 +316,7 @@ func adminToken(logger *log.Logger, given string) string {
 // startAdmin поднимает панель управления на отдельном порту.
 func startAdmin(ctx context.Context, logger *log.Logger, addr string, srv *admin.Server) {
 	if !admin.IsLoopback(addr) {
-		logger.Printf("ВНИМАНИЕ: админка слушает %s, а не loopback — она будет доступна из сети", addr)
+		logger.Printf(i18n.T("WARNING: admin panel listens on %s, not loopback — it will be reachable from the network"), addr)
 	}
 	httpSrv := &http.Server{
 		Addr:              addr,
@@ -323,10 +331,10 @@ func startAdmin(ctx context.Context, logger *log.Logger, addr string, srv *admin
 	}()
 	go func() {
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Printf("админка не поднялась: %v", err)
+			logger.Printf(i18n.T("admin panel failed to start: %v"), err)
 		}
 	}()
-	logger.Printf("админка: http://%s/?token=%s", displayAddr(addr), srv.Token)
+	logger.Printf(i18n.T("admin panel: http://%s/?token=%s"), displayAddr(addr), srv.Token)
 }
 
 // displayAddr делает адрес кликабельным: ":8081" сам по себе в браузер не

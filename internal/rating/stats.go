@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"fairway/internal/i18n"
 )
 
 // Настройки рейтинга. Вынесены в константы, чтобы их было где крутить,
@@ -97,7 +99,7 @@ func (s *Stats) add(o observation, banFor time.Duration) string {
 		// Соединение не установилось — по нему нельзя судить о скорости,
 		// поэтому connect/ttfb не трогаем, чтобы не портить среднее.
 		if s.consecutiveFails >= failsBeforeBan {
-			return s.banLocked(o.at, banFor, "подряд ошибок: "+strconv.Itoa(s.consecutiveFails))
+			return s.banLocked(o.at, banFor, i18n.T("consecutive failures: ")+strconv.Itoa(s.consecutiveFails))
 		}
 		return ""
 	}
@@ -117,7 +119,7 @@ func (s *Stats) add(o observation, banFor time.Duration) string {
 	// Страница проверки — тот же бан, что и 403: сайт узнал прокси и не
 	// пускает, только вежливо. Статус при этом может быть 200.
 	if o.challenge != "" {
-		return s.banLocked(o.at, banFor, "капча: "+o.challenge)
+		return s.banLocked(o.at, banFor, i18n.T("captcha: ")+o.challenge)
 	}
 	if reason := banReasonForStatus(o.status); reason != "" {
 		return s.banLocked(o.at, banFor, reason)
@@ -131,13 +133,13 @@ func (s *Stats) add(o observation, banFor time.Duration) string {
 func banReasonForStatus(status int) string {
 	switch status {
 	case 403:
-		return "403 — доступ запрещён"
+		return i18n.T("403 — access denied")
 	case 429:
-		return "429 — слишком много запросов"
+		return i18n.T("429 — too many requests")
 	case 451:
-		return "451 — заблокировано по требованию"
+		return i18n.T("451 — blocked by legal demand")
 	case 407:
-		return "407 — прокси не принял авторизацию"
+		return i18n.T("407 — proxy rejected authorization")
 	}
 	return ""
 }

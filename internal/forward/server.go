@@ -13,6 +13,8 @@ import (
 	"net/http/httptrace"
 	"strings"
 	"time"
+
+	"fairway/internal/i18n"
 )
 
 // Server принимает подключения как обычный HTTP/HTTPS прокси.
@@ -66,7 +68,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	route, err := s.Pick(sample.Domain)
 	if err != nil {
-		http.Error(w, "нет доступного апстрима: "+err.Error(), http.StatusServiceUnavailable)
+		http.Error(w, i18n.T("no upstream available: ")+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
 	defer route.release()
@@ -75,7 +77,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	if route.MITM {
 		if s.Issuer == nil {
-			s.logf("%s: MITM включён правилом, но выпуск сертификатов не настроен — туннелирую как есть", sample.Domain)
+			s.logf(i18n.T("%s: MITM enabled by rule, but certificate issuing is not configured — tunnelling as is"), sample.Domain)
 		} else {
 			s.mitmTunnel(w, route, target)
 			return
@@ -92,7 +94,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		sample.Err = err
 		sample.Duration = time.Since(started)
 		s.observe(sample)
-		http.Error(w, "апстрим недоступен: "+err.Error(), http.StatusBadGateway)
+		http.Error(w, i18n.T("upstream unavailable: ")+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer upConn.Close()
@@ -100,12 +102,12 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	hj, ok := w.(http.Hijacker)
 	if !ok {
-		http.Error(w, "соединение не поддерживает перехват", http.StatusInternalServerError)
+		http.Error(w, i18n.T("connection does not support hijacking"), http.StatusInternalServerError)
 		return
 	}
 	clientConn, clientBuf, err := hj.Hijack()
 	if err != nil {
-		s.logf("перехват соединения: %v", err)
+		s.logf(i18n.T("hijacking connection: %v"), err)
 		return
 	}
 	defer clientConn.Close()
@@ -140,7 +142,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 // в origin-form по прямому соединению с целью.
 func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	if !r.URL.IsAbs() {
-		http.Error(w, "это прокси-сервер: ожидается запрос в absolute-form", http.StatusBadRequest)
+		http.Error(w, i18n.T("this is a proxy server: an absolute-form request is expected"), http.StatusBadRequest)
 		return
 	}
 	sample := Sample{Domain: hostOnly(r.Host)}
@@ -148,7 +150,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	route, err := s.Pick(sample.Domain)
 	if err != nil {
-		http.Error(w, "нет доступного апстрима: "+err.Error(), http.StatusServiceUnavailable)
+		http.Error(w, i18n.T("no upstream available: ")+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
 	defer route.release()
@@ -193,7 +195,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		sample.Err = err
 		sample.Duration = time.Since(started)
 		s.observe(sample)
-		http.Error(w, "апстрим недоступен: "+err.Error(), http.StatusBadGateway)
+		http.Error(w, i18n.T("upstream unavailable: ")+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()

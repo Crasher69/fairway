@@ -11,14 +11,15 @@ import (
 
 	"fairway/internal/config"
 	"fairway/internal/forward"
+	"fairway/internal/i18n"
 )
 
 var (
 	// ErrNoRule — для домена не подобрано правило и direct запрещён.
-	ErrNoRule = errors.New("для домена нет правила")
+	ErrNoRule = errors.New("no rule for domain")
 	// ErrNoProxy — правило есть, но все прокси листа сейчас недоступны
 	// (выбраны лимиты параллелизма; позже добавятся баны).
-	ErrNoProxy = errors.New("нет свободного прокси")
+	ErrNoProxy = errors.New("no free proxy")
 )
 
 // Proxy — прокси с живым состоянием. Объект переживает перезагрузку конфига:
@@ -78,7 +79,7 @@ func (p *Pool) Apply(cfg *config.Config) error {
 	for _, pc := range cfg.Proxies {
 		up, err := forward.ParseUpstream(pc.ConnectURL())
 		if err != nil {
-			return fmt.Errorf("прокси %s: %w", pc.Name, err)
+			return i18n.Errorf("proxy %s: %w", pc.Name, err)
 		}
 		if old, ok := previous[pc.Name]; ok && old.Upstream.Name == up.Name {
 			proxies[pc.Name] = old // тот же прокси — сохраняем счётчики
@@ -93,7 +94,7 @@ func (p *Pool) Apply(cfg *config.Config) error {
 		for _, ref := range lc.Proxies {
 			pr, ok := proxies[ref]
 			if !ok {
-				return fmt.Errorf("лист %s ссылается на неизвестный прокси %q", lc.Name, ref)
+				return i18n.Errorf("list %s references unknown proxy %q", lc.Name, ref)
 			}
 			members = append(members, pr)
 		}
@@ -157,13 +158,13 @@ func (p *Pool) Acquire(domain string) (*Lease, error) {
 
 	members := lists[rule.List]
 	if len(members) == 0 {
-		return nil, fmt.Errorf("%w: лист %s пуст", ErrNoProxy, rule.List)
+		return nil, i18n.Errorf("%w: list %s is empty", ErrNoProxy, rule.List)
 	}
 
 	st := p.stateFor(domain)
 	chosen := st.pick(members, rule, p.selector())
 	if chosen == nil {
-		return nil, fmt.Errorf("%w: домен %s, лист %s", ErrNoProxy, domain, rule.List)
+		return nil, i18n.Errorf("%w: domain %s, list %s", ErrNoProxy, domain, rule.List)
 	}
 	chosen.active.Add(1)
 	return &Lease{Proxy: chosen, Rule: rule, pool: p, domain: domain}, nil

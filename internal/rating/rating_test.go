@@ -549,7 +549,7 @@ func TestChallengeBansLike403(t *testing.T) {
 	if !banned {
 		t.Fatal("капча со статусом 200 должна банить прокси для домена")
 	}
-	if reason != "капча: cloudflare" {
+	if reason != "captcha: cloudflare" {
 		t.Errorf("причина бана %q", reason)
 	}
 }

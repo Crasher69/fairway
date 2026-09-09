@@ -198,7 +198,7 @@ func TestDomainViewShowsRatingAndShares(t *testing.T) {
 	if !(got.Proxies[0].Share > got.Proxies[1].Share) {
 		t.Errorf("доли не отражают преимущество: %v и %v", got.Proxies[0].Share, got.Proxies[1].Share)
 	}
-	if got.Proxies[0].Status != "ок" {
+	if got.Proxies[0].Status != "ok" {
 		t.Errorf("статус быстрого прокси: %q", got.Proxies[0].Status)
 	}
 }

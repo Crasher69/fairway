@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"fairway/internal/i18n"
 )
 
 // Установка корневого сертификата в доверенные — операция с серьёзными
@@ -59,29 +61,26 @@ func (c *CA) TrustStatus() TrustState {
 	switch runtime.GOOS {
 	case "windows":
 		state.Supported = true
-		state.Store = "Доверенные корневые центры сертификации"
+		state.Store = i18n.T("Trusted Root Certification Authorities")
 		// Смотрим оба хранилища: сертификат мог поставить кто-то руками,
 		// и «не установлен» при живом сертификате в машинном хранилище —
 		// худшее, что панель может сообщить.
 		switch {
 		case windowsHasCert(c.Thumbprint(), true):
-			state.Installed, state.Scope = true, "текущий пользователь"
+			state.Installed, state.Scope = true, i18n.T("current user")
 		case windowsHasCert(c.Thumbprint(), false):
-			state.Installed, state.Scope = true, "вся машина"
-			state.Hint = "Сертификат стоит в машинном хранилище — удалить его отсюда " +
-				"нельзя, нужны права администратора."
+			state.Installed, state.Scope = true, i18n.T("whole machine")
+			state.Hint = i18n.T("The certificate is in the machine store — it cannot be removed from here, administrator rights are required.")
 		}
 	case "darwin":
 		state.Supported = true
-		state.Store = "Связка ключей «Вход»"
+		state.Store = i18n.T("Login keychain")
 		if darwinHasCert(c.Fingerprint()) {
-			state.Installed, state.Scope = true, "текущий пользователь"
+			state.Installed, state.Scope = true, i18n.T("current user")
 		}
 	default:
-		state.Store = "системное хранилище"
-		state.Hint = "На Linux установка зависит от дистрибутива и требует прав root: " +
-			"скопируйте fairway-ca.pem в /usr/local/share/ca-certificates/fairway.crt " +
-			"и выполните update-ca-certificates."
+		state.Store = i18n.T("system store")
+		state.Hint = i18n.T("On Linux installation depends on the distribution and requires root: copy fairway-ca.pem to /usr/local/share/ca-certificates/fairway.crt and run update-ca-certificates.")
 	}
 	return state
 }
@@ -106,7 +105,7 @@ func (c *CA) Install() error {
 		return run("security", "add-trusted-cert", "-r", "trustRoot",
 			"-k", filepath.Join(home, "Library", "Keychains", "login.keychain-db"), path)
 	default:
-		return fmt.Errorf("автоматическая установка на %s не поддерживается", runtime.GOOS)
+		return i18n.Errorf("automatic installation on %s is not supported", runtime.GOOS)
 	}
 }
 
@@ -117,8 +116,7 @@ func (c *CA) Uninstall() error {
 	switch runtime.GOOS {
 	case "windows":
 		if !windowsHasCert(c.Thumbprint(), true) && windowsHasCert(c.Thumbprint(), false) {
-			return fmt.Errorf("сертификат стоит в машинном хранилище: удалите его из " +
-				"оснастки certmgr с правами администратора")
+			return i18n.Errorf("the certificate is in the machine store: remove it via the certmgr snap-in with administrator rights")
 		}
 		return run("certutil", "-user", "-delstore", "Root", c.Thumbprint())
 	case "darwin":
@@ -129,7 +127,7 @@ func (c *CA) Uninstall() error {
 		defer cleanup()
 		return run("security", "remove-trusted-cert", path)
 	default:
-		return fmt.Errorf("автоматическое удаление на %s не поддерживается", runtime.GOOS)
+		return i18n.Errorf("automatic removal on %s is not supported", runtime.GOOS)
 	}
 }
 

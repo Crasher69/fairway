@@ -1,50 +1,62 @@
 # <img src="docs/icon.png" width="28" align="top" alt=""> Fairway
 
-Прокси-балансировщик, который сам выясняет, какой из ваших прокси лучше
-работает с каким сайтом, и распределяет трафик по этим измерениям.
-Один бинарник, без зависимостей, с веб-панелью внутри.
+**English** · [Русский](README.ru.md)
+
+A proxy load balancer that works out by itself which of your proxies performs
+best for which site, and routes traffic by those measurements. One binary, no
+dependencies, web panel built in.
 
 ```
 fairway -proxy :8080 -admin 127.0.0.1:8081
 ```
 
-## Чем отличается от gost, glider, 3proxy и Squid
+## How it differs from gost, glider, 3proxy and Squid
 
-Те умеют списки и ротацию, но балансируют статически: round-robin, least-conn
-или заданные вручную веса. Fairway копит статистику на **пару (домен, прокси)**
-и пересчитывает её на каждом запросе.
+Those support lists and rotation, but balance statically: round-robin,
+least-conn or hand-written weights. Fairway keeps statistics per
+**(domain, proxy) pair** and re-evaluates them on every request.
 
-Практическая разница: один и тот же прокси может быть быстрым для одного сайта
-и полумёртвым для другого, а на третьем — забаненным. Fairway это видит и
-разводит трафик сам.
+The practical difference: the same proxy can be fast for one site, half-dead
+for another and banned on a third. Fairway sees it and spreads the traffic
+accordingly.
 
-## Как он выбирает
+## How it chooses
 
-Все метрики сводятся к одному числу — **цене**: сколько секунд занял бы через
-этот прокси эталонный ответ в 64 КБ.
+Every metric folds into a single number, the **cost**: how many seconds a
+reference 64 KB response would take through this proxy.
 
 ```
-цена = (время подключения + время до первого байта) + 64КБ / скорость
-цена /= (1 - доля ошибок)²
+cost = (connect time + time to first byte) + 64KB / throughput
+cost /= (1 - error rate)²
 ```
 
-Дальше — лотерея с весом `(1/цена)²`, плюс 10% запросов уходит на разведку:
-без неё лидер забрал бы весь трафик, а о том, что аутсайдер починился, узнать
-было бы неоткуда.
+Then a lottery weighted by `(1/cost)²`, plus 10% of requests go to
+exploration: without it the leader would take all the traffic, and there would
+be no way to learn that an outsider has recovered.
 
-**Медленный прокси остаётся в ротации с низким весом. Забаненный выключается
-совсем — но только для того домена, где его забанили.** Признаки бана:
-HTTP 403, 429, 451, 407 или три ошибки соединения подряд.
+**A slow proxy stays in rotation with a low weight. A banned one is switched
+off entirely, but only for the domain where it was banned.** Ban signals:
+HTTP 403, 429, 451, 407, three consecutive connection failures, or a captcha /
+challenge page instead of content (MITM mode).
 
-Рейтинги переживают перезапуск (`data/ratings.json`).
+Ratings survive a restart (`data/ratings.json`).
 
-## Конфиг
+## Language
 
-Создаётся при первом запуске, перечитывается на лету — перезапуск не нужен.
-Битая правка не применяется: в работе остаётся предыдущая версия.
+The log and the panel are in English by default. The switch in the panel
+header changes the language of both the panel and the log; the choice is
+stored in the config as `"language": "ru"` and survives a restart.
+Command-line flags are always in English: they are parsed before the config
+is read.
+
+## Config
+
+Created on first start, re-read on the fly, no restart needed. A broken edit is
+not applied: the previous version stays in service.
 
 ```json
 {
+  "language": "en",
   "defaults": {
     "list": "residential",
     "allow_direct": false,
@@ -59,8 +71,8 @@ HTTP 403, 429, 451, 407 или три ошибки соединения подр
       "port": 1080,
       "login": "user",
       "password": "pass",
-      "country": "RU",
-      "comment": "куплен до декабря"
+      "country": "DE",
+      "comment": "paid until December"
     },
     {"name": "p2", "scheme": "http", "host": "5.6.7.8", "port": 3128}
   ],
@@ -72,85 +84,86 @@ HTTP 403, 429, 451, 407 или три ошибки соединения подр
 }
 ```
 
-Два лимита легко перепутать:
+Two limits are easy to mix up:
 
-- `max_parallel_proxies` — сколько **разных** прокси листа работают на домен
-  одновременно;
-- `max_conns_per_proxy` — сколько соединений держит **один** прокси.
+- `max_parallel_proxies` — how many **different** proxies from the list work
+  on the domain at the same time;
+- `max_conns_per_proxy` — how many connections **one** proxy holds.
 
-`0` означает «взять из `defaults`», `-1` — «без ограничения».
+`0` means "take from `defaults`", `-1` means "unlimited".
 
-Правило подбирается от частного к общему: точное имя → самый длинный
-`*.суффикс` → `*` → `defaults.list`.
+Rules match from specific to general: exact name → longest `*.suffix` →
+`*` → `defaults.list`.
 
-`allow_direct` по умолчанию `false`: домен без правила получит 503, а не уйдёт
-молча с вашего реального IP.
+`allow_direct` is `false` by default: a domain without a rule gets a 503
+instead of silently leaving from your real IP.
 
-Поддерживаются апстримы `http://`, `https://`, `socks5://` и `direct`.
+Supported upstreams: `http://`, `https://`, `socks5://` and `direct`.
 
-## Панель
+## Panel
 
-По умолчанию на `127.0.0.1:8081`, доступ по токену — ссылку с токеном
-fairway печатает в лог при запуске.
+Listens on `127.0.0.1:8081` by default, access by token; fairway prints the
+link with the token to the log on start.
 
-Показывает по каждому домену: какие прокси его обслуживают, их задержки,
-скорость, долю ошибок, ожидаемую долю трафика и статус («ок», «деградирует»,
-«забанен до 14:32»), живой лог запросов и график задержек с подсказкой при
-наведении. Бан можно снять одной кнопкой, не дожидаясь срока. Пустая панель
-показывает, с чего начать, и адрес прокси для настроек браузера.
+Per domain it shows which proxies serve it, their latency, throughput, error
+share, expected traffic share and status ("ok", "degraded", "banned until
+14:32"), a live request log and a latency chart with hover details. A ban can
+be lifted with one button without waiting it out. An empty panel shows how to
+get started and the proxy address for the browser settings.
 
-Тема светлая; тёмная включается по системной настройке или кнопкой в шапке.
+Light theme; dark follows the system setting or a button in the header.
 
-Настройки разнесены по вкладкам: **Прокси** (адрес, порт, логин, пароль,
-страна, комментарий; отмеченные галочками можно разом удалить, положить в
-лист или убрать из него), **Листы** (набор прокси галочками из уже
-заведённых; лист можно переименовать — ссылки в правилах обновятся сами)
-и **Домены** (правило и лист выпадающим списком). Изменения сохраняются
-в конфиг и применяются сразу. Есть кнопка перечитать файл, если правили
-его руками.
+Settings are split into tabs: **Proxies** (address, port, login, password,
+country, comment; checked rows can be deleted, added to a list or removed from
+one in bulk), **Lists** (pick proxies with checkboxes from the ones already
+configured; a list can be renamed, references in rules follow) and
+**Domains** (rule plus list from a dropdown). Changes are saved to the config
+and applied immediately. There is a button to re-read the file if it was
+edited by hand.
 
-Строку из прайса поставщика — `socks5://user:pass@1.2.3.4:1080` — можно
-вставить прямо в поле адреса, она разложится по полям. А целую закупку —
-в импорт списком: понимает `ip:port:логин:пароль` и прочие ходовые форматы,
-сам присваивает имена, пропускает дубликаты и показывает, какая строка
-не разобралась. Импортированное можно сразу положить в лист.
+A provider's connection string — `socks5://user:pass@1.2.3.4:1080` — can be
+pasted straight into the address field and is split into fields. A whole
+purchase goes into the list import: it understands `ip:port:login:password`
+and other common formats, assigns names, skips duplicates and shows which line
+failed to parse. Imported proxies can go straight into a list.
 
-В таблицах есть поиск, в выборе прокси для листа — тоже: с полусотней
-апстримов без него не обойтись.
+Tables have search, and so does the proxy picker for lists: with fifty
+upstreams there is no other way.
 
-## MITM: смотреть запросы
+## MITM: see the requests
 
-Опционально Fairway расшифровывает HTTPS, как Fiddler или Charles: выпускает
-собственный корневой сертификат, а сертификаты сайтов подписывает им на лету.
+Optionally Fairway decrypts HTTPS the way Fiddler or Charles do: it issues
+its own root certificate and signs site certificates with it on the fly.
 
 ```
 fairway -export-ca fairway-ca.crt
 ```
 
-Полученный файл импортируется в «Доверенные корневые центры» на машинах сети
-(в домене — групповой политикой). Включается правилом `"mitm": true`.
+Import the file into "Trusted Root Certification Authorities" on the machines
+of your network (by group policy in a domain). Enabled per rule with
+`"mitm": true`.
 
-Зачем это балансировщику: без расшифровки в туннеле видно только байты, и 403
-неотличим от медленного ответа. С расшифровкой видно настоящий HTTP-статус,
-а значит, бан детектируется точно. Заодно видно тело: если сайт вместо
-содержимого отдал страницу проверки Cloudflare, DataDome, Яндекса или
-капчу, прокси для этого домена банится так же, как по 403, хотя статус
-был 200.
+Why a load balancer needs it: in a tunnel only bytes are visible, and a 403 is
+indistinguishable from a slow response. With decryption the real HTTP status
+is visible, so a ban is detected precisely. The body is visible too: if the
+site returned a Cloudflare, DataDome or Yandex challenge page or a captcha
+instead of content, the proxy is banned for that domain just like on a 403,
+even though the status was 200.
 
-Что нужно знать заранее:
+Good to know in advance:
 
-- **Certificate pinning.** Банковский и мобильный софт проверяет не цепочку,
-  а конкретный сертификат — через MITM он не подключится. Для таких доменов
-  ставьте `"mitm": false`, туннель останется прозрачным.
-- **Проверка отзыва.** У приватного CA нет CRL и OCSP. Браузеры для приватных
-  корней отзыв не проверяют, а вот `curl` на Windows падает с
-  `CERT_TRUST_REVOCATION_STATUS_UNKNOWN` — лечится `--ssl-no-revoke`.
-- **Firefox, Java и Python** держат своё хранилище сертификатов, CA туда
-  добавляется отдельно.
+- **Certificate pinning.** Banking and mobile software checks a specific
+  certificate, not the chain — it will not connect through MITM. Set
+  `"mitm": false` for such domains, the tunnel stays transparent.
+- **Revocation checks.** A private CA has no CRL or OCSP. Browsers do not
+  check revocation for private roots, but `curl` on Windows fails with
+  `CERT_TRUST_REVOCATION_STATUS_UNKNOWN` — fixed by `--ssl-no-revoke`.
+- **Firefox, Java and Python** keep their own certificate stores; the CA
+  is added there separately.
 
-Корневой ключ (`data/fairway-ca.key`) — самое ценное, что есть у установки:
-кто его получит, сможет подписывать сертификаты, которым доверяет вся ваша
-сеть. Права на файл 0600, каталог данных наружу не отдавайте.
+The root key (`data/fairway-ca.key`) is the most valuable thing in the
+installation: whoever gets it can sign certificates your whole network
+trusts. File mode is 0600; do not expose the data directory.
 
 ## Docker
 
@@ -162,36 +175,37 @@ docker run -d --name fairway \
   fairway
 ```
 
-Образ собран на `scratch`, внутри бинарник, корневые сертификаты и часовые
-пояса. Панель наружу пробрасывайте только на `127.0.0.1`.
+The image is built on `scratch`: the binary, root certificates and time
+zones. Publish the panel only on `127.0.0.1`.
 
-## Производительность
+## Performance
 
-На локальном стенде (всё на одной машине, Windows): **~36 000 запросов в
-секунду и ~700 МБ/с** через CONNECT-туннели, 1000 одновременных туннелей
-держатся на 2068 горутинах и 88 МБ кучи.
+On a local stand (everything on one Windows machine): **~36,000 requests per
+second and ~700 MB/s** through CONNECT tunnels; 1,000 concurrent tunnels
+run on 2,068 goroutines and 88 MB of heap.
 
-Обычный HTTP идёт через пул keep-alive соединений к апстриму: **~14 000
-запросов в секунду** на 1000 соединениях. Он всё же медленнее туннелей,
-потому что на каждый запрос разбирается HTTP, а туннель просто копирует
-байты. Подробности и методика в [docs/BENCHMARK.md](docs/BENCHMARK.md).
+Plain HTTP goes through a pool of keep-alive connections to the upstream:
+**~14,000 requests per second** on 1,000 connections. It is still slower
+than tunnels because every request is parsed as HTTP, while a tunnel only
+copies bytes. Details and method in [docs/BENCHMARK.md](docs/BENCHMARK.md).
 
-## Сборка
+## Building
 
-Нужен только Go, ничего больше — ни cgo, ни сборки фронта.
+Only Go is needed — no cgo, no frontend build.
 
 ```
-go build ./cmd/fairway          # под текущую систему
-./build.sh 1.0.0                # релизные бинарники под linux, windows, macOS
+go build ./cmd/fairway          # for the current system
+./build.sh 1.0.0                # release binaries for linux, windows, macOS
 go test ./...
-go generate ./cmd/fairway       # перерисовать иконку (после правки internal/brand)
+go generate ./cmd/fairway       # redraw the icon (after editing internal/brand)
 ```
 
-Иконка у Windows-сборки зашита в exe: ресурс собирается своим кодом в
-`internal/brand`, без внешних утилит, и уже лежит в репозитории.
+The Windows build carries the icon inside the exe: the resource is built by
+our own code in `internal/brand`, without external tools, and is already in
+the repository.
 
-## Лицензия
+## License
 
-[Apache License 2.0](LICENSE). Можно использовать, менять и встраивать
-в закрытые продукты; участники явно дают лицензию на свои патенты.
-При распространении сохраняйте файлы `LICENSE` и `NOTICE`.
+[Apache License 2.0](LICENSE). Use, modify and embed in closed products;
+contributors explicitly license their patents. Keep the `LICENSE` and
+`NOTICE` files when redistributing.

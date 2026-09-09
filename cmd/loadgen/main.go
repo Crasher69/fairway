@@ -22,12 +22,12 @@ import (
 
 func main() {
 	var (
-		proxyAddr   = flag.String("proxy", "127.0.0.1:8080", "адрес проверяемого прокси")
-		target      = flag.String("target", "http://127.0.0.1:19000/", "целевой URL")
-		concurrency = flag.Int("c", 100, "сколько соединений держать одновременно")
-		duration    = flag.Duration("d", 15*time.Second, "продолжительность теста")
-		keepAlive   = flag.Bool("keep-alive", false, "переиспользовать соединения")
-		insecure    = flag.Bool("insecure", false, "не проверять сертификат цели (для MITM-стенда)")
+		proxyAddr   = flag.String("proxy", "127.0.0.1:8080", "address of the proxy under test")
+		target      = flag.String("target", "http://127.0.0.1:19000/", "target URL")
+		concurrency = flag.Int("c", 100, "how many connections to keep open at once")
+		duration    = flag.Duration("d", 15*time.Second, "test duration")
+		keepAlive   = flag.Bool("keep-alive", false, "reuse connections")
+		insecure    = flag.Bool("insecure", false, "skip target certificate verification (for a MITM stand)")
 	)
 	flag.Parse()
 
@@ -95,7 +95,7 @@ func request(ctx context.Context, client *http.Client, target string) outcome {
 	if err == nil && resp.StatusCode >= 400 {
 		// Без этой проверки отказы прокси выглядели бы рекордной скоростью:
 		// 503 отдаётся мгновенно и коротким телом.
-		err = fmt.Errorf("статус %d", resp.StatusCode)
+		err = fmt.Errorf("status %d", resp.StatusCode)
 	}
 	return outcome{latency: time.Since(started), bytes: n, err: err}
 }
@@ -142,14 +142,14 @@ func (r *results) print(concurrency int, keepAlive bool) {
 	latencies := r.latencies
 	r.mu.Unlock()
 
-	mode := "новое соединение на запрос"
+	mode := "new connection per request"
 	if keepAlive {
 		mode = "keep-alive"
 	}
-	fmt.Printf("соединений одновременно: %d (%s)\n", concurrency, mode)
-	fmt.Printf("длительность:            %s\n", elapsed.Round(time.Millisecond))
-	fmt.Printf("успешных запросов:       %d\n", ok)
-	fmt.Printf("ошибок:                  %d\n", failed)
+	fmt.Printf("concurrent connections:  %d (%s)\n", concurrency, mode)
+	fmt.Printf("duration:                %s\n", elapsed.Round(time.Millisecond))
+	fmt.Printf("successful requests:     %d\n", ok)
+	fmt.Printf("errors:                  %d\n", failed)
 
 	r.mu.Lock()
 	causes := make([]string, 0, len(r.failures))
@@ -166,14 +166,14 @@ func (r *results) print(concurrency int, keepAlive bool) {
 	r.mu.Unlock()
 
 	if ok > 0 {
-		fmt.Printf("запросов в секунду:      %.0f\n", float64(ok)/elapsed.Seconds())
-		fmt.Printf("трафик:                  %.1f МБ/с\n",
+		fmt.Printf("requests per second:     %.0f\n", float64(ok)/elapsed.Seconds())
+		fmt.Printf("throughput:              %.1f MB/s\n",
 			float64(r.bytes.Load())/elapsed.Seconds()/(1024*1024))
-		fmt.Printf("задержка p50/p95/p99:    %s / %s / %s\n",
+		fmt.Printf("latency p50/p95/p99:     %s / %s / %s\n",
 			percentile(latencies, 0.50).Round(time.Millisecond),
 			percentile(latencies, 0.95).Round(time.Millisecond),
 			percentile(latencies, 0.99).Round(time.Millisecond))
-		fmt.Printf("максимум:                %s\n", latencies[len(latencies)-1].Round(time.Millisecond))
+		fmt.Printf("max:                     %s\n", latencies[len(latencies)-1].Round(time.Millisecond))
 	}
 }
 

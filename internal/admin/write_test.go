@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"fairway/internal/config"
+	"fairway/internal/i18n"
 )
 
 // editable — сервер с включённой правкой: конфиг лежит в файле, применение
@@ -632,5 +633,25 @@ func TestEditorNotifiesWatcherAfterSave(t *testing.T) {
 	send(t, "POST", e.url+"/api/proxies", config.Proxy{Name: "third", URL: "http://3.3.3.3:8080"})
 	if saved != 1 {
 		t.Errorf("Saved вызван после отклонённой правки")
+	}
+}
+
+func TestLanguageIsSavedAndApplied(t *testing.T) {
+	e := newEditable(t)
+	t.Cleanup(func() { i18n.Set(i18n.EN) })
+
+	status, body := send(t, "PUT", e.url+"/api/language", map[string]any{"language": "ru"})
+	if status != 200 {
+		t.Fatalf("смена языка: %d %s", status, body)
+	}
+	if got := e.onDisk(t).Language; got != "ru" {
+		t.Errorf("язык на диске %q, ожидался ru", got)
+	}
+	// Неизвестный язык отклоняется, на диске остаётся прежний.
+	if status, _ := send(t, "PUT", e.url+"/api/language", map[string]any{"language": "de"}); status != 400 {
+		t.Errorf("неизвестный язык: статус %d, ожидался 400", status)
+	}
+	if got := e.onDisk(t).Language; got != "ru" {
+		t.Errorf("после отклонённой правки язык на диске %q", got)
 	}
 }

@@ -36,30 +36,63 @@ $('theme-toggle').onclick = () => {
   if (state.domain) refreshDomain().catch(() => {});
 };
 
+// --- язык ---
+
+// Пока запрос на смену языка в полёте, overview не должен откатить панель
+// на прежний язык.
+let langSwitching = false;
+
+$('lang-select').onchange = (event) => {
+  const next = event.target.value;
+  langSwitching = true;
+  applyLanguage(next);
+  rerenderAll();
+  send('PUT', 'api/language', { language: next })
+    .then(() => toast(t('Language switched')))
+    // Без файла конфига (режим -upstream) язык остаётся локальным
+    // для панели — лог его не увидит, но и ошибки показывать незачем.
+    .catch((err) => { if (!String(err.message).includes('501')) showConfigError(err); })
+    .finally(() => { langSwitching = false; });
+};
+
+// rerenderAll перерисовывает всё, что собрано из строк в JS: разметка
+// переводится applyLanguage, а таблицы и подписи — заново из данных.
+function rerenderAll() {
+  refreshDomains().catch(() => {});
+  if (state.domain) {
+    refreshDomain().catch(() => {});
+    renderLog();
+    renderChart();
+  }
+  if (state.overview) refreshOverview().catch(() => {});
+  if (currentView && currentView !== 'monitor' && currentView !== 'cert') refreshSettings().catch(() => {});
+  if (currentView === 'cert') refreshCert().catch(() => {});
+}
+
 // --- утилиты форматирования ---
 
-const ms = (v) => (v === null || v === undefined ? '—' : v < 10 ? v.toFixed(1) + ' мс' : Math.round(v) + ' мс');
+const ms = (v) => (v === null || v === undefined ? '—' : (v < 10 ? v.toFixed(1) : Math.round(v)) + ' ' + t('ms'));
 
 function bytes(n) {
   if (!n) return '—';
-  const units = ['Б', 'КБ', 'МБ', 'ГБ'];
+  const units = [t('B'), t('KB'), t('MB'), t('GB')];
   let i = 0;
   while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
   return (i === 0 ? n : n.toFixed(1)) + ' ' + units[i];
 }
 
-const speed = (v) => (!v ? '—' : bytes(v) + '/с');
+const speed = (v) => (!v ? '—' : bytes(v) + t('/s'));
 const percent = (v) => (v ? (v * 100).toFixed(1) + '%' : '0%');
 
 function duration(sec) {
   const s = Math.floor(sec);
-  if (s >= 86400) return Math.floor(s / 86400) + ' д ' + Math.floor((s % 86400) / 3600) + ' ч';
-  if (s >= 3600) return Math.floor(s / 3600) + ' ч ' + Math.floor((s % 3600) / 60) + ' мин';
-  if (s >= 60) return Math.floor(s / 60) + ' мин ' + (s % 60) + ' с';
-  return s + ' с';
+  if (s >= 86400) return Math.floor(s / 86400) + ' ' + t('d') + ' ' + Math.floor((s % 86400) / 3600) + ' ' + t('h');
+  if (s >= 3600) return Math.floor(s / 3600) + ' ' + t('h') + ' ' + Math.floor((s % 3600) / 60) + ' ' + t('min');
+  if (s >= 60) return Math.floor(s / 60) + ' ' + t('min') + ' ' + (s % 60) + ' ' + t('s');
+  return s + ' ' + t('s');
 }
 
-const clock = (iso) => new Date(iso).toLocaleTimeString('ru-RU');
+const clock = (iso) => new Date(iso).toLocaleTimeString(locale());
 
 // Палитра серий. Цвет закрепляется за прокси в порядке первого появления и
 // не меняется при перерисовке — иначе линия «прыгала» бы по цветам, когда
@@ -101,22 +134,27 @@ async function refreshOverview() {
   const data = await api('api/overview');
   state.overview = data;
   $('version').textContent = data.version;
-  $('requests').textContent = data.requests.toLocaleString('ru-RU');
+  $('requests').textContent = data.requests.toLocaleString(locale());
   $('proxies').textContent = data.proxies;
   $('uptime').textContent = duration(data.uptime_sec);
   $('certs').textContent = data.certs_cached;
   $('goroutines').textContent = data.goroutines;
-  $('heap').textContent = data.heap_mb.toFixed(1) + ' МБ';
+  $('heap').textContent = data.heap_mb.toFixed(1) + ' ' + t('MB');
   $('proxy-addr').textContent = data.proxy_addr || '—';
   $('onboarding-addr').textContent = data.proxy_addr || '—';
   if (data.config_path) {
     document.querySelectorAll('.config-note').forEach((el) => { el.textContent = data.config_path; });
   }
   if (data.ca_subject) {
-    const until = new Date(data.ca_expires).toLocaleDateString('ru-RU');
-    $('ca-info').textContent = `корневой CA до ${until}`;
+    const until = new Date(data.ca_expires).toLocaleDateString(locale());
+    $('ca-info').textContent = t('root CA valid until {date}', { date: until });
   }
   $('config-readonly').hidden = data.editable;
+  // Язык — из конфига: панель подстраивается под то, что применил сервер.
+  if (data.language && data.language !== lang && !langSwitching) {
+    applyLanguage(data.language);
+    rerenderAll();
+  }
   renderOnboarding();
 }
 
@@ -166,7 +204,7 @@ function renderDomainList() {
   const shown = rows.filter((row) => row.domain === state.domain || matches(filters.domain, row.domain));
   $('domain-filter').hidden = rows.length === 0;
   $('domains-count').textContent = !rows.length ? ''
-    : shown.length === rows.length ? `${rows.length}` : `${shown.length} из ${rows.length}`;
+    : shown.length === rows.length ? `${rows.length}` : t('{shown} of {total}', { shown: shown.length, total: rows.length });
   $('domains-empty').hidden = !rows.length || shown.length > 0;
 
   list.replaceChildren(...shown.map((row) => {
@@ -179,8 +217,10 @@ function renderDomainList() {
 
     const count = document.createElement('span');
     count.className = 'count';
-    count.textContent = row.banned ? `${row.requests} · ${row.banned} бан` : String(row.requests);
-    count.title = row.banned ? `${row.requests} запросов, забанено прокси: ${row.banned}` : `${row.requests} запросов`;
+    count.textContent = row.banned ? t('{n} · {banned} banned', { n: row.requests, banned: row.banned }) : String(row.requests);
+    count.title = row.banned
+      ? t('{n} requests, banned proxies: {banned}', { n: row.requests, banned: row.banned })
+      : t('{n} requests', { n: row.requests });
     if (row.banned) count.classList.add('status-ban');
 
     li.append(name, count);
@@ -217,20 +257,22 @@ function renderRule(rule) {
   const chips = [];
   const link = $('rule-edit-link');
   if (!rule.known) {
-    chips.push(chip('правило', 'не найдено — трафик шёл напрямую'));
-    link.textContent = 'Добавить правило';
+    chips.push(chip(t('rule'), t('not found — traffic went direct')));
+    link.textContent = t('Add rule');
+    link.dataset.action = 'add';
     link.href = '#rules';
     link.dataset.pattern = state.domain;
   } else {
     chips.push(
-      chip('паттерн', rule.pattern),
-      chip('лист', rule.list),
-      chip('TLS', rule.mitm ? 'расшифровка' : 'туннель'),
-      chip('прокси разом', rule.max_parallel_proxies || 'без ограничения'),
-      chip('соединений на прокси', rule.max_conns_per_proxy || 'без ограничения'),
-      chip('бан', humanDuration(rule.ban_duration)),
+      chip(t('pattern'), rule.pattern),
+      chip(t('list'), rule.list),
+      chip('TLS', rule.mitm ? t('decrypt') : t('tunnel')),
+      chip(t('proxies at once'), rule.max_parallel_proxies || t('unlimited')),
+      chip(t('connections per proxy'), rule.max_conns_per_proxy || t('unlimited')),
+      chip(t('ban'), humanDuration(rule.ban_duration)),
     );
-    link.textContent = 'Изменить правило';
+    link.textContent = t('Edit rule');
+    link.dataset.action = 'edit';
     link.dataset.pattern = rule.pattern === '' ? '' : rule.pattern;
   }
   $('rule').replaceChildren(...chips);
@@ -242,10 +284,10 @@ function humanDuration(s) {
   const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:([\d.]+)s)?$/.exec(s);
   if (!m) return s;
   const parts = [];
-  if (m[1] && +m[1]) parts.push(+m[1] + ' ч');
-  if (m[2] && +m[2]) parts.push(+m[2] + ' мин');
-  if (m[3] && +m[3]) parts.push(+m[3] + ' с');
-  return parts.join(' ') || 'выключен';
+  if (m[1] && +m[1]) parts.push(+m[1] + ' ' + t('h'));
+  if (m[2] && +m[2]) parts.push(+m[2] + ' ' + t('min'));
+  if (m[3] && +m[3]) parts.push(+m[3] + ' ' + t('s'));
+  return parts.join(' ') || t('off');
 }
 
 // Паттерн, который нужно подставить в форму правила, когда откроется
@@ -258,16 +300,16 @@ $('rule-edit-link').onclick = (event) => {
   const pattern = event.currentTarget.dataset.pattern || '';
   filters.rule = pattern;
   $('rule-filter').value = pattern;
-  if (event.currentTarget.textContent === 'Добавить правило') pendingRulePattern = pattern;
+  if (event.currentTarget.dataset.action === 'add') pendingRulePattern = pattern;
   window.location.hash = 'rules';
 };
 
 function badgeClass(proxy) {
   if (proxy.banned) return 'bad';
   switch (proxy.status) {
-    case 'ок': return 'ok';
-    case 'деградирует': return 'warn';
-    case 'разведка': return 'info';
+    case 'ok': return 'ok';
+    case 'degraded': return 'warn';
+    case 'probing': return 'info';
     default: return 'idle';
   }
 }
@@ -275,7 +317,7 @@ function badgeClass(proxy) {
 function renderProxies(proxies) {
   const body = $('proxy-table').querySelector('tbody');
   if (!proxies.length) {
-    body.replaceChildren(emptyRow(9, 'По этому домену ещё нет замеров'));
+    body.replaceChildren(emptyRow(9, t('No measurements for this domain yet')));
     return;
   }
   body.replaceChildren(...proxies.map((p) => {
@@ -293,8 +335,8 @@ function renderProxies(proxies) {
     const badge = document.createElement('span');
     badge.className = 'badge ' + badgeClass(p);
     badge.textContent = p.banned
-      ? 'забанен до ' + new Date(p.banned_until).toLocaleTimeString('ru-RU')
-      : p.status;
+      ? t('banned until {time}', { time: new Date(p.banned_until).toLocaleTimeString(locale()) })
+      : t(p.status);
     status.append(badge);
     if (p.banned) {
       if (p.ban_reason) {
@@ -304,10 +346,10 @@ function renderProxies(proxies) {
         why.textContent = p.ban_reason;
         status.append(why);
       }
-      const unban = button('Снять бан', () => {
+      const unban = button(t('Unban'), () => {
         $('config-error').hidden = true;
         send('POST', `api/domains/${encodeURIComponent(state.domain)}/unban/${encodeURIComponent(p.name)}`)
-          .then((data) => { renderProxies(data.proxies); refreshDomains(); toast(`Бан с ${p.name} снят`); })
+          .then((data) => { renderProxies(data.proxies); refreshDomains(); toast(t('Ban lifted from {name}', { name: p.name })); })
           .catch(showConfigError);
       }, 'ghost small unban');
       status.append(document.createElement('br'), unban);
@@ -341,7 +383,7 @@ function renderProxies(proxies) {
       cell(p.samples ? ms(p.ttfb_ms) : '—'),
       cell(speed(p.throughput)),
       cell(percent(p.error_rate), p.error_rate > 0.25 ? 'status-err' : ''),
-      cell(p.samples ? p.cost.toFixed(3) + ' с' : '—'),
+      cell(p.samples ? p.cost.toFixed(3) + ' ' + t('s') : '—'),
       share,
     );
     return tr;
@@ -382,12 +424,12 @@ function renderLog() {
   const body = $('log-table').querySelector('tbody');
   const recent = state.events.slice(-40).reverse();
   if (!recent.length) {
-    body.replaceChildren(emptyRow(7, 'Запросов ещё не было'));
+    body.replaceChildren(emptyRow(7, t('No requests yet')));
     return;
   }
   body.replaceChildren(...recent.map((e) => {
     const tr = document.createElement('tr');
-    const status = e.error ? 'ошибка' : e.challenge ? `${e.status} капча` : (e.status || 'туннель');
+    const status = e.error ? t('error') : e.challenge ? e.status + ' ' + t('captcha') : (e.status || t('tunnel'));
 
     const proxy = document.createElement('td');
     proxy.className = 'name';
@@ -395,7 +437,7 @@ function renderLog() {
 
     const statusCell = cell(status, e.error || e.challenge || e.status >= 400 ? 'status-err' : '');
     if (e.error) statusCell.title = e.error;
-    if (e.challenge) statusCell.title = 'вместо содержимого пришла страница проверки: ' + e.challenge;
+    if (e.challenge) statusCell.title = t('a challenge page came instead of content: {vendor}', { vendor: e.challenge });
 
     const when = document.createElement('td');
     when.className = 'mono';
@@ -431,7 +473,7 @@ function renderChart() {
   const points = state.events.filter((e) => !e.error && e.ttfb_ms > 0);
   chart.points = points;
   if (points.length < 2) {
-    svg.replaceChildren(text(width / 2, height / 2, 'мало данных — нужно хотя бы два успешных запроса', 'middle', textColor));
+    svg.replaceChildren(text(width / 2, height / 2, t('not enough data — at least two successful requests are needed'), 'middle', textColor));
     $('legend').replaceChildren();
     return;
   }
@@ -450,7 +492,7 @@ function renderChart() {
     const value = (maxV / 4) * i;
     const yy = y(value);
     parts.push(line(pad.left, yy, width - pad.right, yy, lineColor));
-    parts.push(text(pad.left - 8, yy + 4, Math.round(value) + ' мс', 'end', textColor));
+    parts.push(text(pad.left - 8, yy + 4, Math.round(value) + ' ' + t('ms'), 'end', textColor));
   }
   // Подписи времени по краям: первый и последний запрос на графике.
   parts.push(text(pad.left, height - 6, clock(points[0].at), 'start', textColor));
@@ -729,7 +771,7 @@ async function send(method, path, body) {
   const text = await resp.text();
   if (!resp.ok) {
     if (resp.status === 501) $('config-readonly').hidden = false;
-    throw new Error(text.trim() || ('статус ' + resp.status));
+    throw new Error(text.trim() || t('status {code}', { code: resp.status }));
   }
   return text ? JSON.parse(text) : null;
 }
@@ -745,7 +787,7 @@ function showConfigError(err) {
 // вариант, и показывать надо именно его, а не то, что мы отправили.
 function edit(action, done) {
   $('config-error').hidden = true;
-  action().then(refreshSettings).then(() => toast(done || 'Сохранено и применено')).catch(showConfigError);
+  action().then(refreshSettings).then(() => toast(done || t('Saved and applied'))).catch(showConfigError);
 }
 
 async function refreshSettings() {
@@ -822,13 +864,13 @@ function renderProxyTable() {
   $('proxy-count').textContent = settings.proxies.length ? `${settings.proxies.length}` : '';
   renderBulkBar();
   if (!settings.proxies.length) {
-    body.replaceChildren(emptyRow(10, 'Прокси пока нет — добавьте ниже или вставьте список из прайса'));
+    body.replaceChildren(emptyRow(10, t('No proxies yet — add one or paste a list from a price sheet')));
     return;
   }
   const shown = visibleProxies();
   $('proxy-check-all').checked = shown.length > 0 && shown.every((p) => checked.has(p.name));
   if (!shown.length) {
-    body.replaceChildren(emptyRow(10, 'Под поиск ничего не подошло'));
+    body.replaceChildren(emptyRow(10, t('Nothing matches the search')));
     return;
   }
   body.replaceChildren(...shown.map((p) => {
@@ -861,9 +903,9 @@ function renderProxyTable() {
         return tag;
       }));
     } else {
-      inLists.textContent = 'ни в одном';
+      inLists.textContent = t('none');
       inLists.className = 'dim';
-      inLists.title = 'Прокси не получит трафика, пока не окажется в листе';
+      inLists.title = t('The proxy gets no traffic until it is in a list');
     }
 
     tr.append(
@@ -877,10 +919,10 @@ function renderProxyTable() {
       inLists,
       textCell(p.comment),
       actionCell(
-        button('Изменить', () => startProxyEdit(p), 'ghost'),
-        button('Удалить', () => {
-          if (!confirm(`Удалить прокси ${p.name}? Из листов он тоже исчезнет.`)) return;
-          edit(() => send('DELETE', 'api/proxies/' + encodeURIComponent(p.name)), `Прокси ${p.name} удалён`);
+        button(t('Edit'), () => startProxyEdit(p), 'ghost'),
+        button(t('Delete'), () => {
+          if (!confirm(t('Delete proxy {name}? It will disappear from lists too.', { name: p.name }))) return;
+          edit(() => send('DELETE', 'api/proxies/' + encodeURIComponent(p.name)), t('Proxy {name} deleted', { name: p.name }));
         }, 'ghost danger'),
       ),
     );
@@ -911,18 +953,18 @@ function bulk(action, list, done) {
 $('bulk-add').onclick = () => {
   const list = $('bulk-list').value.trim();
   if (!list) { $('bulk-list').focus(); return; }
-  bulk('add_to_list', list, `Добавлено в лист ${list}: ${checked.size}`);
+  bulk('add_to_list', list, t('Added to list {list}: {n}', { list, n: checked.size }));
 };
 
 $('bulk-remove').onclick = () => {
   const list = $('bulk-list').value.trim();
   if (!list) { $('bulk-list').focus(); return; }
-  bulk('remove_from_list', list, `Убрано из листа ${list}: ${checked.size}`);
+  bulk('remove_from_list', list, t('Removed from list {list}: {n}', { list, n: checked.size }));
 };
 
 $('bulk-delete').onclick = () => {
-  if (!confirm(`Удалить отмеченные прокси (${checked.size})? Из листов они тоже исчезнут.`)) return;
-  bulk('delete', '', `Удалено прокси: ${checked.size}`);
+  if (!confirm(t('Delete selected proxies ({n})? They will disappear from lists too.', { n: checked.size }))) return;
+  bulk('delete', '', t('Proxies deleted: {n}', { n: checked.size }));
 };
 
 $('bulk-clear').onclick = () => {
@@ -941,7 +983,7 @@ function startProxyEdit(proxy) {
   form.password.value = proxy.password || '';
   form.country.value = proxy.country || '';
   form.comment.value = proxy.comment || '';
-  $('proxy-form-title').textContent = 'Изменить прокси: ' + proxy.name;
+  $('proxy-form-title').textContent = t('Edit proxy: {name}', { name: proxy.name });
   $('proxy-form-cancel').hidden = false;
   openPanel('proxy-form-card');
 }
@@ -949,7 +991,7 @@ function startProxyEdit(proxy) {
 function resetProxyForm() {
   editing.proxy = null;
   $('proxy-form').reset();
-  $('proxy-form-title').textContent = 'Добавить прокси';
+  $('proxy-form-title').textContent = t('Add proxy');
   $('proxy-form-cancel').hidden = true;
   closePanel('proxy-form-card');
 }
@@ -981,7 +1023,7 @@ $('proxy-form').onsubmit = (event) => {
   edit(() => (target
     ? send('PUT', 'api/proxies/' + encodeURIComponent(target), proxy)
     : send('POST', 'api/proxies', proxy)
-  ).then(resetProxyForm), target ? `Прокси ${proxy.name} изменён` : `Прокси ${proxy.name} добавлен`);
+  ).then(resetProxyForm), target ? t('Proxy {name} updated', { name: proxy.name }) : t('Proxy {name} added', { name: proxy.name }));
 };
 
 // --- листы ---
@@ -989,7 +1031,7 @@ $('proxy-form').onsubmit = (event) => {
 // usedBy — где лист задействован: в правилах и как лист по умолчанию.
 function usedBy(name) {
   const where = settings.domains.filter((d) => d.list === name).map((d) => d.pattern);
-  if (settings.defaults.list === name) where.push('по умолчанию');
+  if (settings.defaults.list === name) where.push(t('default'));
   return where;
 }
 
@@ -997,12 +1039,12 @@ function renderListTable() {
   const body = $('cfg-lists').querySelector('tbody');
   $('list-count').textContent = settings.lists.length ? `${settings.lists.length}` : '';
   if (!settings.lists.length) {
-    body.replaceChildren(emptyRow(5, 'Листов пока нет — создайте первый ниже'));
+    body.replaceChildren(emptyRow(5, t('No lists yet — create the first one')));
     return;
   }
   const shown = settings.lists.filter((l) => matches(filters.list, l.name, (l.proxies || []).join(' ')));
   if (!shown.length) {
-    body.replaceChildren(emptyRow(5, 'Под поиск ничего не подошло'));
+    body.replaceChildren(emptyRow(5, t('Nothing matches the search')));
     return;
   }
   body.replaceChildren(...shown.map((l) => {
@@ -1019,9 +1061,9 @@ function renderListTable() {
         return tag;
       }));
     } else {
-      usedCell.textContent = 'нигде';
+      usedCell.textContent = t('nowhere');
       usedCell.className = 'dim';
-      usedCell.title = 'Ни одно правило не ссылается на этот лист';
+      usedCell.title = t('No rule references this list');
     }
     tr.append(
       name,
@@ -1029,11 +1071,11 @@ function renderListTable() {
       cell((l.proxies || []).length),
       usedCell,
       actionCell(
-        button('Изменить', () => startListEdit(l), 'ghost'),
-        button('Удалить', () => {
-          const warn = used.length ? ` Он используется: ${used.join(', ')} — эти правила придётся переназначить.` : '';
-          if (!confirm(`Удалить лист ${l.name}?${warn}`)) return;
-          edit(() => send('DELETE', 'api/lists/' + encodeURIComponent(l.name)), `Лист ${l.name} удалён`);
+        button(t('Edit'), () => startListEdit(l), 'ghost'),
+        button(t('Delete'), () => {
+          const warn = used.length ? t(' It is used by: {where} — those rules will need another list.', { where: used.join(', ') }) : '';
+          if (!confirm(t('Delete list {name}?{warn}', { name: l.name, warn }))) return;
+          edit(() => send('DELETE', 'api/lists/' + encodeURIComponent(l.name)), t('List {name} deleted', { name: l.name }));
         }, 'ghost danger'),
       ),
     );
@@ -1050,7 +1092,7 @@ function renderListMembers(selected) {
   if (!settings.proxies.length) {
     const note = document.createElement('div');
     note.className = 'empty-note';
-    note.textContent = 'Прокси ещё не заведены — добавьте их на вкладке «Прокси».';
+    note.textContent = t('No proxies configured yet — add them on the “Proxies” tab.');
     box.replaceChildren(note);
     updateMembersCount();
     return;
@@ -1061,7 +1103,7 @@ function renderListMembers(selected) {
   if (!shown.length) {
     const note = document.createElement('div');
     note.className = 'empty-note';
-    note.textContent = 'Под поиск ничего не подошло.';
+    note.textContent = t('Nothing matches the search.');
     box.replaceChildren(note);
     updateMembersCount();
     return;
@@ -1119,8 +1161,8 @@ function updateMembersCount() {
   const picked = memberInputs().filter((input) => input.checked).length;
   const total = settings.proxies.length;
   const visible = memberInputs().length;
-  let text = total ? `выбрано ${picked} из ${total}` : '';
-  if (filters.members && visible !== total) text += ` · показано ${visible}`;
+  let text = total ? t('selected {picked} of {total}', { picked, total }) : '';
+  if (filters.members && visible !== total) text += t(' · shown {n}', { n: visible });
   $('members-count').textContent = text;
 }
 
@@ -1140,7 +1182,7 @@ function startListEdit(list) {
   const form = $('list-form');
   form.name.value = list.name;
   renderListMembers(list.proxies || []);
-  $('list-form-title').textContent = 'Изменить лист: ' + list.name;
+  $('list-form-title').textContent = t('Edit list: {name}', { name: list.name });
   $('list-form-cancel').hidden = false;
   $('list-rename-hint').hidden = false;
   openPanel('list-form-card');
@@ -1151,7 +1193,7 @@ function resetListForm() {
   const form = $('list-form');
   form.reset();
   renderListMembers();
-  $('list-form-title').textContent = 'Создать лист';
+  $('list-form-title').textContent = t('Create list');
   $('list-form-cancel').hidden = true;
   $('list-rename-hint').hidden = true;
   closePanel('list-form-card');
@@ -1169,7 +1211,7 @@ $('list-form').onsubmit = (event) => {
   edit(() => (previous
     ? send('PUT', 'api/lists/' + encodeURIComponent(previous), body)
     : send('PUT', 'api/lists', body)
-  ).then(resetListForm), previous ? `Лист ${body.name} сохранён` : `Лист ${body.name} создан`);
+  ).then(resetListForm), previous ? t('List {name} saved', { name: body.name }) : t('List {name} created', { name: body.name }));
 };
 
 // --- правила доменов ---
@@ -1178,12 +1220,12 @@ function renderRuleTable() {
   const body = $('cfg-domains').querySelector('tbody');
   $('rule-count').textContent = settings.domains.length ? `${settings.domains.length}` : '';
   if (!settings.domains.length) {
-    body.replaceChildren(emptyRow(7, 'Правил пока нет — все домены идут по общим настройкам'));
+    body.replaceChildren(emptyRow(7, t('No rules yet — all domains follow the general settings')));
     return;
   }
   const shown = settings.domains.filter((d) => matches(filters.rule, d.pattern, d.list));
   if (!shown.length) {
-    body.replaceChildren(emptyRow(7, 'Под поиск ничего не подошло'));
+    body.replaceChildren(emptyRow(7, t('Nothing matches the search')));
     return;
   }
   body.replaceChildren(...shown.map((d) => {
@@ -1192,31 +1234,31 @@ function renderRuleTable() {
     pattern.className = 'name';
     // mitm может отсутствовать — это «наследовать», а не «выключено».
     const mitm = (d.mitm === undefined || d.mitm === null)
-      ? (settings.defaults.mitm ? 'расшифровка (из общих)' : 'туннель (из общих)')
-      : (d.mitm ? 'расшифровка' : 'туннель');
+      ? (settings.defaults.mitm ? t('decrypt (from general)') : t('tunnel (from general)'))
+      : (d.mitm ? t('decrypt') : t('tunnel'));
     // Ноль и пустое поле — «как в общих настройках»: показываем значение
     // оттуда, но приглушённо, чтобы было видно, что оно унаследовано.
     const inherited = (own, general, format) => {
       const td = cell(format(own || general || 0));
       if (!own) {
         td.classList.add('dim');
-        td.title = 'из общих настроек';
+        td.title = t('from general settings');
       }
       return td;
     };
-    const limit = (v) => (v === -1 ? 'без ограничения' : v || 'без ограничения');
+    const limit = (v) => (v === -1 ? t('unlimited') : v || t('unlimited'));
     tr.append(
       pattern,
       textCell(d.list),
       textCell(mitm),
       inherited(d.max_parallel_proxies, settings.defaults.max_parallel_proxies, limit),
       inherited(d.max_conns_per_proxy, settings.defaults.max_conns_per_proxy, limit),
-      inherited(d.ban_duration, settings.defaults.ban_duration, (v) => (v ? humanDuration(v) : 'выключен')),
+      inherited(d.ban_duration, settings.defaults.ban_duration, (v) => (v ? humanDuration(v) : t('off'))),
       actionCell(
-        button('Изменить', () => startRuleEdit(d), 'ghost'),
-        button('Удалить', () => {
-          if (!confirm(`Удалить правило ${d.pattern}?`)) return;
-          edit(() => send('DELETE', 'api/domains/' + encodeURIComponent(d.pattern)), `Правило ${d.pattern} удалено`);
+        button(t('Edit'), () => startRuleEdit(d), 'ghost'),
+        button(t('Delete'), () => {
+          if (!confirm(t('Delete rule {pattern}?', { pattern: d.pattern }))) return;
+          edit(() => send('DELETE', 'api/domains/' + encodeURIComponent(d.pattern)), t('Rule {pattern} deleted', { pattern: d.pattern }));
         }, 'ghost danger'),
       ),
     );
@@ -1233,7 +1275,7 @@ function startRuleEdit(rule) {
   form.max_parallel_proxies.value = rule.max_parallel_proxies ?? '';
   form.max_conns_per_proxy.value = rule.max_conns_per_proxy ?? '';
   form.ban_duration.value = rule.ban_duration || '';
-  $('rule-form-title').textContent = 'Изменить правило: ' + rule.pattern;
+  $('rule-form-title').textContent = t('Edit rule: {pattern}', { pattern: rule.pattern });
   $('rule-form-cancel').hidden = false;
   openPanel('rule-form-card');
 }
@@ -1241,7 +1283,7 @@ function startRuleEdit(rule) {
 function resetRuleForm() {
   editing.rule = null;
   $('rule-form').reset();
-  $('rule-form-title').textContent = 'Добавить правило';
+  $('rule-form-title').textContent = t('Add rule');
   $('rule-form-cancel').hidden = true;
   closePanel('rule-form-card');
 }
@@ -1267,7 +1309,7 @@ $('rule-form').onsubmit = (event) => {
     .then(() => (previous && previous !== rule.pattern
       ? send('DELETE', 'api/domains/' + encodeURIComponent(previous))
       : null))
-    .then(resetRuleForm), `Правило ${rule.pattern} сохранено`);
+    .then(resetRuleForm), t('Rule {pattern} saved', { pattern: rule.pattern }));
 };
 
 // --- общие настройки ---
@@ -1283,7 +1325,7 @@ function fillListSelects() {
   const importSelect = $('import-list-select');
   const importPrevious = importSelect.value;
   importSelect.replaceChildren(
-    new Option('— не класть в лист —', ''),
+    new Option(t('— do not add to a list —'), ''),
     ...names.map((name) => new Option(name, name)),
   );
   if (names.includes(importPrevious)) importSelect.value = importPrevious;
@@ -1291,7 +1333,7 @@ function fillListSelects() {
   const defaultsSelect = $('defaults-list-select');
   const defaultsPrevious = defaultsSelect.value;
   defaultsSelect.replaceChildren(
-    new Option('— не задан —', ''),
+    new Option(t('— not set —'), ''),
     ...names.map((name) => new Option(name, name)),
   );
   defaultsSelect.value = names.includes(defaultsPrevious) ? defaultsPrevious : (settings.defaults.list || '');
@@ -1317,11 +1359,11 @@ $('defaults-form').onsubmit = (event) => {
     max_parallel_proxies: number(form.max_parallel_proxies.value),
     max_conns_per_proxy: number(form.max_conns_per_proxy.value),
     ban_duration: form.ban_duration.value.trim(),
-  }), 'Общие настройки сохранены');
+  }), t('General settings saved'));
 };
 
 document.querySelectorAll('.reload-config').forEach((btn) => {
-  btn.onclick = () => edit(() => send('POST', 'api/config/reload'), 'Файл перечитан и применён');
+  btn.onclick = () => edit(() => send('POST', 'api/config/reload'), t('File re-read and applied'));
 });
 
 // --- корневой сертификат ---
@@ -1329,7 +1371,7 @@ document.querySelectorAll('.reload-config').forEach((btn) => {
 async function refreshCert() {
   const data = await api('api/ca');
   $('cert-subject').textContent = data.subject;
-  $('cert-until').textContent = new Date(data.not_after).toLocaleDateString('ru-RU');
+  $('cert-until').textContent = new Date(data.not_after).toLocaleDateString(locale());
   // Отпечаток разбиваем по два символа: так его сверяют глазами с тем,
   // что показывает системное хранилище.
   $('cert-fingerprint').textContent = (data.fingerprint.match(/../g) || []).join(':');
@@ -1340,7 +1382,7 @@ async function refreshCert() {
 
   const badge = document.createElement('span');
   badge.className = 'badge ' + (data.trust.installed ? 'ok' : 'idle');
-  badge.textContent = data.trust.installed ? 'установлен в системе' : 'не установлен';
+  badge.textContent = data.trust.installed ? t('installed in the system') : t('not installed');
   $('cert-state').replaceChildren(badge);
 
   // На Linux ставить нечем: там всё зависит от дистрибутива и требует root.
@@ -1354,10 +1396,10 @@ function certAction(path, done) {
   send('POST', path).then(refreshCert).then(() => toast(done)).catch(showConfigError);
 }
 
-$('cert-install').onclick = () => certAction('api/ca/install', 'Сертификат установлен');
+$('cert-install').onclick = () => certAction('api/ca/install', t('Certificate installed'));
 $('cert-uninstall').onclick = () => {
-  if (!confirm('Удалить корневой сертификат Fairway из доверенных на этой машине?')) return;
-  certAction('api/ca/uninstall', 'Сертификат удалён из системы');
+  if (!confirm(t('Remove the Fairway root certificate from the trusted ones on this machine?'))) return;
+  certAction('api/ca/uninstall', t('Certificate removed from the system'));
 };
 
 // --- импорт прокси списком ---
@@ -1379,7 +1421,7 @@ $('import-form').onsubmit = (event) => {
       renderImportResult(result);
       if (result.added_count) {
         form.text.value = '';
-        toast(`Импортировано прокси: ${result.added_count}`);
+        toast(t('Proxies imported: {n}', { n: result.added_count }));
       }
       return refreshSettings();
     })
@@ -1395,9 +1437,9 @@ function renderImportResult(result) {
 
   const summary = document.createElement('p');
   summary.className = result.failed_count ? 'import-warn' : 'import-ok';
-  summary.textContent = `Добавлено ${result.added_count}` +
-    (result.skipped_count ? `, пропущено дубликатов ${result.skipped_count}` : '') +
-    (result.failed_count ? `, не разобрано ${result.failed_count}` : '');
+  summary.textContent = t('Added {n}', { n: result.added_count }) +
+    (result.skipped_count ? t(', duplicates skipped {n}', { n: result.skipped_count }) : '') +
+    (result.failed_count ? t(', not parsed {n}', { n: result.failed_count }) : '');
   box.append(summary);
 
   for (const issue of [...(result.failed || []), ...(result.skipped || [])]) {
@@ -1405,7 +1447,7 @@ function renderImportResult(result) {
     line.className = 'import-issue';
     const number = document.createElement('span');
     number.className = 'muted';
-    number.textContent = 'строка ' + issue.line;
+    number.textContent = t('line {n}', { n: issue.line });
     const text = document.createElement('code');
     text.textContent = issue.text;
     const reason = document.createElement('span');

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"fairway/internal/challenge"
+	"fairway/internal/i18n"
 )
 
 // CertIssuer выпускает сертификаты доменов для разговора с клиентом.
@@ -35,12 +36,12 @@ func (s *Server) mitmTunnel(w http.ResponseWriter, route *Route, target string) 
 
 	hj, ok := w.(http.Hijacker)
 	if !ok {
-		http.Error(w, "соединение не поддерживает перехват", http.StatusInternalServerError)
+		http.Error(w, i18n.T("connection does not support hijacking"), http.StatusInternalServerError)
 		return
 	}
 	clientRaw, _, err := hj.Hijack()
 	if err != nil {
-		s.logf("перехват соединения: %v", err)
+		s.logf(i18n.T("hijacking connection: %v"), err)
 		return
 	}
 	defer clientRaw.Close()
@@ -58,7 +59,7 @@ func (s *Server) mitmTunnel(w http.ResponseWriter, route *Route, target string) 
 		// клиент проверяет отзыв, а у приватного CA нет CRL/OCSP; в клиенте
 		// зашит pinning. Первые две лечатся на стороне клиента, третья —
 		// только исключением домена (mitm: false).
-		s.logf("%s: клиент отверг наш сертификат (%v) — проверьте, импортирован ли CA; если это pinning, добавьте домен в исключения", domain, err)
+		s.logf(i18n.T("%s: client rejected our certificate (%v) — check that the CA is imported; if this is pinning, exclude the domain"), domain, err)
 		return
 	}
 	defer clientTLS.Close()
@@ -392,7 +393,7 @@ func (f *firstByteWatcher) Read(b []byte) (int, error) {
 
 // writeGatewayError сообщает клиенту о неудаче внутри расшифрованного туннеля.
 func writeGatewayError(w io.Writer, cause error) {
-	body := "апстрим недоступен: " + cause.Error()
+	body := i18n.T("upstream unavailable: ") + cause.Error()
 	resp := &http.Response{
 		StatusCode:    http.StatusBadGateway,
 		Proto:         "HTTP/1.1",
