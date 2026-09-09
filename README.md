@@ -10,6 +10,22 @@ dependencies, web panel built in.
 fairway -proxy :8080 -admin 127.0.0.1:8081
 ```
 
+## Download
+
+Prebuilt binaries are on the
+[Releases page](https://github.com/Crasher69/fairway/releases/latest):
+`fairway-linux-amd64`, `fairway-linux-arm64`, `fairway-windows-amd64.exe`,
+`fairway-darwin-arm64` (Apple Silicon), `fairway-darwin-amd64` (Intel Mac).
+Static, no dependencies: download and run. The latest build is always
+available by a direct link, for example:
+
+```
+curl -LO https://github.com/Crasher69/fairway/releases/latest/download/fairway-linux-amd64
+chmod +x fairway-linux-amd64
+```
+
+Or build from source, see [Building](#building).
+
 ## How it differs from gost, glider, 3proxy and Squid
 
 Those support lists and rotation, but balance statically: round-robin,

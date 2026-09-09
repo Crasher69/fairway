@@ -9,6 +9,7 @@
 *.pem
 *.key
 *.crt
+/config.json
 config.local.json
 *.log
 

@@ -10,6 +10,22 @@
 fairway -proxy :8080 -admin 127.0.0.1:8081
 ```
 
+## Скачать
+
+Готовые бинарники лежат на
+[странице Releases](https://github.com/Crasher69/fairway/releases/latest):
+`fairway-linux-amd64`, `fairway-linux-arm64`, `fairway-windows-amd64.exe`,
+`fairway-darwin-arm64` (Apple Silicon), `fairway-darwin-amd64` (Intel Mac).
+Статические, без зависимостей: скачал и запустил. Последняя сборка всегда
+доступна по прямой ссылке, например:
+
+```
+curl -LO https://github.com/Crasher69/fairway/releases/latest/download/fairway-linux-amd64
+chmod +x fairway-linux-amd64
+```
+
+Или соберите из исходников, см. [Сборка](#сборка).
+
 ## Чем отличается от gost, glider, 3proxy и Squid
 
 Те умеют списки и ротацию, но балансируют статически: round-robin, least-conn
