@@ -2,6 +2,11 @@
 
 **Русский** · [English](README.md)
 
+[![CI](https://github.com/Crasher69/fairway/actions/workflows/ci.yml/badge.svg)](https://github.com/Crasher69/fairway/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Crasher69/fairway)](https://github.com/Crasher69/fairway/releases/latest)
+[![Go Report Card](https://goreportcard.com/badge/github.com/Crasher69/fairway)](https://goreportcard.com/report/github.com/Crasher69/fairway)
+[![License](https://img.shields.io/github/license/Crasher69/fairway)](LICENSE)
+
 Прокси-балансировщик, который сам выясняет, какой из ваших прокси лучше
 работает с каким сайтом, и распределяет трафик по этим измерениям.
 Один бинарник, без зависимостей, с веб-панелью внутри.
@@ -9,6 +14,8 @@
 ```
 fairway -proxy :8080 -admin 127.0.0.1:8081
 ```
+
+<p align="center"><img src="docs/panel.png" width="900" alt="Панель Fairway: прокси домена по цене, один забанен, график времени до первого байта"></p>
 
 ## Скачать
 
@@ -181,12 +188,14 @@ fairway -export-ca fairway-ca.crt
 ## Docker
 
 ```
-docker build -t fairway .
 docker run -d --name fairway \
   -p 8080:8080 -p 127.0.0.1:8081:8081 \
   -v fairway-data:/data \
-  fairway
+  ghcr.io/crasher69/fairway
 ```
+
+Образы под `linux/amd64` и `linux/arm64` публикуются в GitHub Container
+Registry на каждый релиз. Собрать локально: `docker build -t fairway .`
 
 Образ собран на `scratch`, внутри бинарник, корневые сертификаты и часовые
 пояса. Панель наружу пробрасывайте только на `127.0.0.1`.

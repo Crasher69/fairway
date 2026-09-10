@@ -1,7 +1,7 @@
 # Сборка. Версия проставляется через ldflags, символы вырезаются (-s -w):
 # бинарник худеет примерно на четверть, а отладка в проде всё равно идёт
 # по логам и админке, а не по gdb.
-FROM golang:1.27-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -9,7 +9,10 @@ RUN go mod download
 COPY . .
 
 ARG VERSION=dev
-RUN CGO_ENABLED=0 GOOS=linux go build \
+ARG TARGETARCH
+# Стадия сборки идёт на платформе раннера, а не под эмуляцией: Go
+# кросс-компилирует сам, а arm64-образ под QEMU собирался бы в разы дольше.
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
       -trimpath \
       -ldflags="-s -w -X main.version=${VERSION}" \
       -o /out/fairway ./cmd/fairway

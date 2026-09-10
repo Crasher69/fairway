@@ -2,6 +2,11 @@
 
 **English** · [Русский](README.ru.md)
 
+[![CI](https://github.com/Crasher69/fairway/actions/workflows/ci.yml/badge.svg)](https://github.com/Crasher69/fairway/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Crasher69/fairway)](https://github.com/Crasher69/fairway/releases/latest)
+[![Go Report Card](https://goreportcard.com/badge/github.com/Crasher69/fairway)](https://goreportcard.com/report/github.com/Crasher69/fairway)
+[![License](https://img.shields.io/github/license/Crasher69/fairway)](LICENSE)
+
 A proxy load balancer that works out by itself which of your proxies performs
 best for which site, and routes traffic by those measurements. One binary, no
 dependencies, web panel built in.
@@ -9,6 +14,8 @@ dependencies, web panel built in.
 ```
 fairway -proxy :8080 -admin 127.0.0.1:8081
 ```
+
+<p align="center"><img src="docs/panel.png" width="900" alt="Fairway panel: proxies for a domain ranked by cost, one of them banned, time-to-first-byte chart"></p>
 
 ## Download
 
@@ -184,12 +191,14 @@ trusts. File mode is 0600; do not expose the data directory.
 ## Docker
 
 ```
-docker build -t fairway .
 docker run -d --name fairway \
   -p 8080:8080 -p 127.0.0.1:8081:8081 \
   -v fairway-data:/data \
-  fairway
+  ghcr.io/crasher69/fairway
 ```
+
+Images for `linux/amd64` and `linux/arm64` are published to GitHub Container
+Registry on every release. To build locally: `docker build -t fairway .`
 
 The image is built on `scratch`: the binary, root certificates and time
 zones. Publish the panel only on `127.0.0.1`.

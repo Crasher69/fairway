@@ -1,0 +1,72 @@
+# Релиз по тегу vX.Y.Z: бинарники под все платформы прикрепляются к
+# GitHub Release, Docker-образ уходит в GitHub Container Registry.
+#
+#   git tag -a v0.2.0 -m "Fairway 0.2.0" && git push origin v0.2.0
+#
+# Заметки к релизу генерируются из коммитов между тегами; текст можно
+# поправить на странице релиза после публикации.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # создать релиз и прикрепить файлы
+  packages: write   # запушить образ в ghcr.io
+
+jobs:
+  binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: build
+        run: ./build.sh "${GITHUB_REF_NAME#v}"
+
+      - name: checksums
+        run: cd dist && sha256sum fairway-* > SHA256SUMS
+
+      - name: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "Fairway ${GITHUB_REF_NAME#v}" \
+            --generate-notes
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ github.ref_name }}
