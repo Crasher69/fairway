@@ -26,7 +26,7 @@ jobs:
           go-version-file: go.mod
 
       - name: build
-        run: ./build.sh "${GITHUB_REF_NAME#v}"
+        run: sh build.sh "${GITHUB_REF_NAME#v}"
 
       - name: checksums
         run: cd dist && sha256sum fairway-* > SHA256SUMS

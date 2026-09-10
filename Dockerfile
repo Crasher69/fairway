@@ -3,6 +3,9 @@
 # по логам и админке, а не по gdb.
 FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 
+# В golang:alpine нет tzdata, а zoneinfo нужен финальному образу.
+RUN apk add --no-cache ca-certificates tzdata
+
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
