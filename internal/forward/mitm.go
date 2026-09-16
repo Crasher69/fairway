@@ -142,7 +142,7 @@ func (s *Server) roundTrip(up *mitmUpstream, client net.Conn, clientReader *bufi
 		return s.fail(sample, started, client, err, up)
 	}
 
-	resp, targetReader, ttfb, received, err := exchange(conn, req)
+	resp, targetReader, ttfb, received, err := exchange(conn, req, up.timeout)
 	if err != nil && retriable && !fresh && !received {
 		// Цель могла закрыть keep-alive соединение, пока оно простаивало, —
 		// это штатная ситуация, а не отказ прокси. Повторяем только если от
@@ -154,7 +154,7 @@ func (s *Server) roundTrip(up *mitmUpstream, client net.Conn, clientReader *bufi
 		sample.Reused = false
 		if err == nil {
 			rewind()
-			resp, targetReader, ttfb, _, err = exchange(conn, req)
+			resp, targetReader, ttfb, _, err = exchange(conn, req, up.timeout)
 		}
 	}
 	if err != nil {
@@ -278,14 +278,22 @@ func (s *Server) replayBodyLimit() int64 {
 // received сообщает, пришёл ли от цели хотя бы один байт: по нему решается,
 // можно ли повторять запрос после ошибки.
 // Возвращает и ридер цели: после 101 в нём могут лежать первые кадры.
-func exchange(conn net.Conn, req *http.Request) (resp *http.Response, reader *bufio.Reader, ttfb time.Duration, received bool, err error) {
+//
+// На заголовки ответа отводится wait: прокси, который принял запрос и
+// молчит, иначе не давал бы ни ошибки, ни замера, а клиент ждал бы вечно.
+// На тело дедлайн не распространяется — оно может идти сколько угодно.
+func exchange(conn net.Conn, req *http.Request, wait time.Duration) (resp *http.Response, reader *bufio.Reader, ttfb time.Duration, received bool, err error) {
 	sent := time.Now()
 	if err := req.Write(conn); err != nil {
 		return nil, nil, 0, false, err
 	}
 	watcher := &firstByteWatcher{r: conn}
 	reader = bufio.NewReader(watcher)
+	if wait > 0 {
+		_ = conn.SetReadDeadline(sent.Add(wait))
+	}
 	resp, err = http.ReadResponse(reader, req)
+	_ = conn.SetReadDeadline(time.Time{})
 	received = !watcher.first.IsZero()
 	if err != nil {
 		return nil, nil, 0, received, err

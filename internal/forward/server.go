@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"fairway/internal/i18n"
@@ -22,8 +23,9 @@ import (
 // правило домена (mitm) и наличие Issuer.
 type Server struct {
 	// Pick выбирает маршрут для домена. Обязателен. Ошибка означает
-	// «нет живого прокси» — клиент получит 503.
-	Pick func(domain string) (*Route, error)
+	// «нет живого прокси» — клиент получит 503. avoid — имена маршрутов,
+	// через которые этот запрос уже не прошёл; брать их снова нельзя.
+	Pick func(domain string, avoid []string) (*Route, error)
 	// Observe вызывается по завершении каждого запроса. Может быть nil.
 	Observe func(Sample)
 	// Issuer выпускает сертификаты для расшифровки TLS. Без него правило
@@ -39,7 +41,11 @@ type Server struct {
 	// закрыла keep-alive соединение. 0 означает DefaultReplayBodyLimit,
 	// отрицательное — не буферизовать (повторяются только запросы без тела).
 	ReplayBodyLimit int64
-	Logger          *log.Logger
+	// IdleTimeout — сколько туннель может молчать в обе стороны, прежде
+	// чем его закроют. 0 означает DefaultIdleTimeout, отрицательное —
+	// без ограничения.
+	IdleTimeout time.Duration
+	Logger      *log.Logger
 }
 
 const defaultDialTimeout = 15 * time.Second
@@ -58,46 +64,66 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // handleConnect обслуживает HTTPS: поднимает туннель до цели через апстрим
 // и гоняет байты в обе стороны, попутно считая TTFB и объём трафика.
+//
+// Прокси, который принимает CONNECT и молчит, — самый неприятный случай:
+// ошибки нет, замера нет, а браузер ждёт. Поэтому туннель живёт по трём
+// правилам, и все три нужны вместе:
+//
+//   - пока клиенту не отвечено 200, неудачное подключение повторяется
+//     через другой прокси — клиент ничего не замечает;
+//   - после 200 цель обязана прислать первый байт за DialTimeout, иначе
+//     это ошибка прокси для этого домена, и присланное клиентом (TLS
+//     ClientHello) повторяется через другой прокси;
+//   - туннель, в котором IdleTimeout нет движения, закрывается: он держит
+//     слот рабочего набора и соединение у прокси, а не даёт ничего.
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	target := r.Host
 	if _, _, err := net.SplitHostPort(target); err != nil {
 		target = net.JoinHostPort(target, "443")
 	}
-	sample := Sample{Domain: hostOnly(target)}
+	domain := hostOnly(target)
 	started := time.Now()
 
-	route, err := s.Pick(sample.Domain)
+	route, err := s.Pick(domain, nil)
 	if err != nil {
 		http.Error(w, i18n.T("no upstream available: ")+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	defer route.release()
-	up := route.Upstream
-	sample.Upstream = route.Name
+	// Маршрут меняется при повторе через другой прокси, поэтому
+	// освобождается тот, что будет в переменной к концу, а не первый.
+	defer func() { route.release() }()
 
 	if route.MITM {
 		if s.Issuer == nil {
-			s.logf(i18n.T("%s: MITM enabled by rule, but certificate issuing is not configured — tunnelling as is"), sample.Domain)
+			s.logf(i18n.T("%s: MITM enabled by rule, but certificate issuing is not configured — tunnelling as is"), domain)
 		} else {
 			s.mitmTunnel(w, route, target)
 			return
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), s.dialTimeout())
-	defer cancel()
-
-	dialStart := time.Now()
-	upConn, err := up.DialTarget(ctx, target)
-	sample.Connect = time.Since(dialStart)
-	if err != nil {
-		sample.Err = err
+	var (
+		avoid  []string
+		upConn net.Conn
+		sample Sample
+	)
+	for {
+		sample = Sample{Domain: domain, Upstream: route.Name}
+		upConn, err = s.dialTunnel(r.Context(), route, target, &sample)
+		if err == nil {
+			break
+		}
 		sample.Duration = time.Since(started)
 		s.observe(sample)
-		http.Error(w, i18n.T("upstream unavailable: ")+err.Error(), http.StatusBadGateway)
-		return
+		var next *Route
+		next, err = s.nextRoute(domain, route, &avoid)
+		if err != nil {
+			http.Error(w, i18n.T("upstream unavailable: ")+sample.Err.Error(), http.StatusBadGateway)
+			return
+		}
+		route = next
 	}
-	defer upConn.Close()
+	defer func() { upConn.Close() }()
 	connected := time.Now()
 
 	hj, ok := w.(http.Hijacker)
@@ -116,25 +142,143 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	counted := &countingConn{Conn: upConn}
-	done := make(chan struct{})
+	var activity atomic.Int64
+	activity.Store(time.Now().UnixNano())
+	head := &tunnelHead{dst: upConn, activity: &activity}
+	pumpDone := make(chan struct{})
 	go func() {
-		defer close(done)
-		// clientBuf может держать байты, вычитанные вместе с заголовками.
-		_, _ = io.Copy(upConn, clientBuf)
-		closeWrite(upConn)
+		defer close(pumpDone)
+		buf := make([]byte, 32<<10)
+		for {
+			// clientBuf может держать байты, вычитанные вместе с заголовками.
+			n, err := clientBuf.Read(buf)
+			if n > 0 {
+				_ = head.write(buf[:n])
+			}
+			if err != nil {
+				head.closeWrite()
+				return
+			}
+		}
 	}()
-	_, _ = io.Copy(clientConn, counted)
-	closeWrite(clientConn)
-	<-done
-
-	first, n := counted.stats()
-	if !first.IsZero() {
-		sample.TTFB = first.Sub(connected)
+	finish := func() {
+		clientConn.Close()
+		<-pumpDone
 	}
-	sample.Bytes = n
+
+	// Ждём первый байт от цели. Если его нет, а клиент что-то прислал,
+	// прокси для этого запроса провалился, и клиентские байты уходят
+	// через другой.
+	buf := make([]byte, 32<<10)
+	var n int
+	for {
+		_ = upConn.SetReadDeadline(time.Now().Add(s.dialTimeout()))
+		var rerr error
+		n, rerr = upConn.Read(buf)
+		if n > 0 {
+			_ = upConn.SetReadDeadline(time.Time{})
+			break
+		}
+		if rerr == nil {
+			continue // пустое чтение без ошибки — ждём дальше
+		}
+		sent, replayable := head.state()
+		upConn.Close()
+		if !sent {
+			// Клиент так ничего и не прислал: браузер открыл соединение
+			// впрок и передумал. Прокси ни при чём — замера нет.
+			finish()
+			return
+		}
+		sample.Err = tunnelError(rerr, s.dialTimeout())
+		sample.Duration = time.Since(started)
+		s.observe(sample)
+		if !replayable {
+			finish()
+			return
+		}
+		for {
+			var next *Route
+			next, err = s.nextRoute(domain, route, &avoid)
+			if err != nil {
+				finish()
+				return
+			}
+			route = next
+			sample = Sample{Domain: domain, Upstream: route.Name}
+			upConn, err = s.dialTunnel(r.Context(), route, target, &sample)
+			if err == nil {
+				break
+			}
+			sample.Duration = time.Since(started)
+			s.observe(sample)
+		}
+		connected = time.Now()
+		// Ошибка записи всплывёт на следующем чтении как обрыв до ответа.
+		_ = head.switchTo(upConn)
+	}
+
+	sample.TTFB = time.Since(connected)
+	head.seal()
+	total := int64(n)
+	activity.Store(time.Now().UnixNano())
+	stopIdle := watchIdle(s.idleTimeout(), &activity, func() {
+		upConn.Close()
+		clientConn.Close()
+	})
+	if _, err := clientConn.Write(buf[:n]); err == nil {
+		for {
+			n, err := upConn.Read(buf)
+			if n > 0 {
+				total += int64(n)
+				activity.Store(time.Now().UnixNano())
+				if _, werr := clientConn.Write(buf[:n]); werr != nil {
+					break
+				}
+			}
+			if err != nil {
+				break
+			}
+		}
+	}
+	closeWrite(clientConn)
+	<-pumpDone
+	stopIdle()
+
+	sample.Bytes = total
 	sample.Duration = time.Since(started)
 	s.observe(sample)
+}
+
+// dialTunnel открывает соединение с целью через маршрут и записывает в
+// замер время подключения, а при неудаче — ошибку.
+func (s *Server) dialTunnel(ctx context.Context, route *Route, target string, sample *Sample) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.dialTimeout())
+	defer cancel()
+	dialStart := time.Now()
+	conn, err := route.Upstream.DialTarget(ctx, target)
+	sample.Connect = time.Since(dialStart)
+	if err != nil {
+		sample.Err = err
+	}
+	return conn, err
+}
+
+// nextRoute сдаёт маршрут, через который запрос не прошёл, и берёт другой,
+// минуя все провалившиеся. Ошибка — попытки исчерпаны или брать некого;
+// в этом случае возвращается прежний маршрут, чтобы вызывающему было что
+// освобождать (повторное освобождение безвредно).
+func (s *Server) nextRoute(domain string, failed *Route, avoid *[]string) (*Route, error) {
+	*avoid = append(*avoid, failed.Name)
+	failed.release()
+	if len(*avoid) >= maxAttempts {
+		return failed, i18n.Errorf("%d upstreams tried", len(*avoid))
+	}
+	next, err := s.Pick(domain, *avoid)
+	if err != nil {
+		return failed, err
+	}
+	return next, nil
 }
 
 // handleHTTP обслуживает обычный HTTP. Через http-апстрим запрос уходит
@@ -145,20 +289,70 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, i18n.T("this is a proxy server: an absolute-form request is expected"), http.StatusBadRequest)
 		return
 	}
-	sample := Sample{Domain: hostOnly(r.Host)}
+	domain := hostOnly(r.Host)
 	started := time.Now()
 
-	route, err := s.Pick(sample.Domain)
+	route, err := s.Pick(domain, nil)
 	if err != nil {
 		http.Error(w, i18n.T("no upstream available: ")+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	defer route.release()
-	sample.Upstream = route.Name
+	defer func() { route.release() }()
 
-	// Запрос идёт через пул keep-alive соединений апстрима. Замеры снимаются
-	// трассировкой: она одна знает, было ли соединение установлено заново
-	// или взято из пула, и когда пришёл первый байт ответа.
+	// Запрос без тела повторяется через другой прокси, если через этот не
+	// пришло ответа: заголовки повторить нетрудно, а ответа не было, так
+	// что двойного выполнения GET не случится. Так же поступает
+	// http.Transport при обрыве keep-alive. С телом — нет: оно уже могло
+	// уйти по частям, и собрать его заново не из чего.
+	var (
+		avoid  []string
+		sample Sample
+		resp   *http.Response
+	)
+	for {
+		sample = Sample{Domain: domain, Upstream: route.Name}
+		resp, err = s.forwardHTTP(route, r, &sample)
+		if err == nil {
+			break
+		}
+		sample.Duration = time.Since(started)
+		s.observe(sample)
+		if r.Body != http.NoBody {
+			http.Error(w, i18n.T("upstream unavailable: ")+err.Error(), http.StatusBadGateway)
+			return
+		}
+		var next *Route
+		next, err = s.nextRoute(domain, route, &avoid)
+		if err != nil {
+			http.Error(w, i18n.T("upstream unavailable: ")+sample.Err.Error(), http.StatusBadGateway)
+			return
+		}
+		route = next
+	}
+	defer resp.Body.Close()
+	sample.Status = resp.StatusCode
+
+	respHeader := w.Header()
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			respHeader.Add(k, v)
+		}
+	}
+	removeHopByHop(respHeader)
+	w.WriteHeader(resp.StatusCode)
+	counted := &countingReader{r: resp.Body}
+	if _, err := io.Copy(w, counted); err != nil && !errors.Is(err, io.EOF) {
+		sample.Err = err
+	}
+	sample.Bytes = counted.n
+	sample.Duration = time.Since(started)
+	s.observe(sample)
+}
+
+// forwardHTTP отправляет запрос через пул keep-alive соединений апстрима и
+// снимает замер трассировкой: она одна знает, было ли соединение
+// установлено заново или взято из пула, и когда пришёл первый байт ответа.
+func (s *Server) forwardHTTP(route *Route, r *http.Request, sample *Sample) (*http.Response, error) {
 	var (
 		dialStart, gotConn, firstByte time.Time
 		reused                        bool
@@ -180,46 +374,22 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	removeHopByHop(outReq.Header)
 
 	resp, err := route.Upstream.Transport(s.dialTimeout()).RoundTrip(outReq)
-	finishConnect := func() {
-		sample.Reused = reused
-		if !reused && !dialStart.IsZero() {
-			end := gotConn
-			if end.IsZero() {
-				end = time.Now()
-			}
-			sample.Connect = end.Sub(dialStart)
+	sample.Reused = reused
+	if !reused && !dialStart.IsZero() {
+		end := gotConn
+		if end.IsZero() {
+			end = time.Now()
 		}
+		sample.Connect = end.Sub(dialStart)
 	}
 	if err != nil {
-		finishConnect()
 		sample.Err = err
-		sample.Duration = time.Since(started)
-		s.observe(sample)
-		http.Error(w, i18n.T("upstream unavailable: ")+err.Error(), http.StatusBadGateway)
-		return
+		return nil, err
 	}
-	defer resp.Body.Close()
-	finishConnect()
-	sample.Status = resp.StatusCode
 	if !firstByte.IsZero() && !gotConn.IsZero() {
 		sample.TTFB = firstByte.Sub(gotConn)
 	}
-
-	respHeader := w.Header()
-	for k, vv := range resp.Header {
-		for _, v := range vv {
-			respHeader.Add(k, v)
-		}
-	}
-	removeHopByHop(respHeader)
-	w.WriteHeader(resp.StatusCode)
-	counted := &countingReader{r: resp.Body}
-	if _, err := io.Copy(w, counted); err != nil && !errors.Is(err, io.EOF) {
-		sample.Err = err
-	}
-	sample.Bytes = counted.n
-	sample.Duration = time.Since(started)
-	s.observe(sample)
+	return resp, nil
 }
 
 func (s *Server) dialTimeout() time.Duration {
@@ -227,6 +397,16 @@ func (s *Server) dialTimeout() time.Duration {
 		return s.DialTimeout
 	}
 	return defaultDialTimeout
+}
+
+func (s *Server) idleTimeout() time.Duration {
+	switch {
+	case s.IdleTimeout > 0:
+		return s.IdleTimeout
+	case s.IdleTimeout < 0:
+		return 0
+	}
+	return DefaultIdleTimeout
 }
 
 func (s *Server) observe(sample Sample) {

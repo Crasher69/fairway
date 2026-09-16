@@ -60,7 +60,16 @@ be no way to learn that an outsider has recovered.
 **A slow proxy stays in rotation with a low weight. A banned one is switched
 off entirely, but only for the domain where it was banned.** Ban signals:
 HTTP 403, 429, 451, 407, three consecutive connection failures, or a captcha /
-challenge page instead of content (MITM mode).
+challenge page instead of content (MITM mode). A proxy that accepts the
+connection and then never delivers a byte from the target counts as a
+connection failure too: the target has to answer within the dial timeout.
+
+**A request that got no reply through one proxy is retried through another**,
+up to three proxies in total, and the client does not notice. For tunnels
+that covers everything the client sent before the target's first byte (the
+TLS handshake included); for plain HTTP, requests without a body. Once a
+single byte has come back the request is never retried: it may already have
+been executed.
 
 Ratings survive a restart (`data/ratings.json`).
 

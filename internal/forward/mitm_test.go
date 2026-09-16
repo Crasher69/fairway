@@ -59,7 +59,7 @@ func (h *mitmHarness) wire(t *testing.T) {
 	originRoots.AddCert(h.target.Certificate())
 
 	h.proxy = httptest.NewServer(&Server{
-		Pick: func(string) (*Route, error) {
+		Pick: func(string, []string) (*Route, error) {
 			return &Route{Upstream: direct, Name: "direct", MITM: true}, nil
 		},
 		Issuer:    mitmca.NewIssuer(ca),
@@ -207,7 +207,7 @@ func TestMITMDisabledLeavesTunnelOpaque(t *testing.T) {
 	// Переключаем маршрут на прозрачный туннель.
 	direct, _ := ParseUpstream("direct")
 	srv := h.proxy.Config.Handler.(*Server)
-	srv.Pick = func(string) (*Route, error) {
+	srv.Pick = func(string, []string) (*Route, error) {
 		return &Route{Upstream: direct, Name: "direct", MITM: false}, nil
 	}
 

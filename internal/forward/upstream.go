@@ -50,6 +50,10 @@ func (u *Upstream) Transport(dialTimeout time.Duration) *http.Transport {
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   dialTimeout,
 			ExpectContinueTimeout: time.Second,
+			// Прокси, который принял запрос и молчит, иначе держал бы
+			// клиента вечно и не давал ни ошибки, ни замера — та же беда,
+			// что у туннеля без первого байта.
+			ResponseHeaderTimeout: dialTimeout,
 			// HTTP/2 к цели не разбираем — замеры считаются по HTTP/1.1.
 			ForceAttemptHTTP2: false,
 			TLSNextProto:      map[string]func(string, *tls.Conn) http.RoundTripper{},

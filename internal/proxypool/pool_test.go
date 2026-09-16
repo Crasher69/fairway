@@ -266,3 +266,58 @@ func TestApplyKeepsLiveProxies(t *testing.T) {
 		t.Errorf("после Release у %s осталось %d активных", before.Name, before.Active())
 	}
 }
+
+// TestAcquireAvoidsFailedProxies — повтор запроса через другой прокси
+// не должен вернуть тот же, через который он только что не прошёл.
+// А когда кроме провалившихся никого нет, лучше честный отказ.
+func TestAcquireAvoidsFailedProxies(t *testing.T) {
+	pool, err := New(mustConfig(t, threeProxies))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 20; i++ {
+		lease, err := pool.Acquire("example.com", "a", "b")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if lease.Proxy.Name != "c" {
+			t.Fatalf("выдан %s, хотя a и b провалились", lease.Proxy.Name)
+		}
+		lease.Release()
+	}
+	if _, err := pool.Acquire("example.com", "a", "b", "c"); !errors.Is(err, ErrNoProxy) {
+		t.Errorf("все провалились — ожидался ErrNoProxy, получено %v", err)
+	}
+}
+
+// TestCandidatesCarryInFlight — стратегия видит, сколько соединений прокси
+// уже держит на домене: без этого непроверенный, но зависший прокси
+// получал бы каждый новый запрос.
+func TestCandidatesCarryInFlight(t *testing.T) {
+	pool, err := New(mustConfig(t, threeProxies))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen map[string]int
+	pool.Select = func(_ string, cs []Candidate) *Proxy {
+		seen = map[string]int{}
+		for _, c := range cs {
+			seen[c.Proxy.Name] = c.InFlight
+		}
+		return cs[0].Proxy
+	}
+	first, err := pool.Acquire("example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Release()
+	if _, err := pool.Acquire("example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if seen["a"] != 1 || seen["b"] != 0 {
+		t.Errorf("ожидалось a:1, b:0, получено %v", seen)
+	}
+	if got := pool.InFlight("example.com"); got["a"] != 2 {
+		t.Errorf("InFlight после двух захватов a: %v", got)
+	}
+}

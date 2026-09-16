@@ -1,6 +1,9 @@
 package proxypool
 
-import "sync"
+import (
+	"slices"
+	"sync"
+)
 
 // domainState — живое состояние одного домена: сколько соединений сейчас
 // держит каждый прокси именно на этом домене. Отсюда работает лимит
@@ -15,11 +18,14 @@ type domainState struct {
 
 // pick отбирает кандидатов по лимитам и выбирает одного.
 // Возвращает nil, если свободных прокси нет.
-func (s *domainState) pick(members []*Proxy, rule Rule, sel Selector) *Proxy {
+//
+// avoid — прокси, через которые этот запрос уже не прошёл; они выбывают
+// до всех остальных проверок, как и забаненные внутри стратегии.
+func (s *domainState) pick(members []*Proxy, rule Rule, sel Selector, avoid []string) *Proxy {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	candidates := make([]*Proxy, 0, len(members))
+	candidates := make([]Candidate, 0, len(members))
 	inUse := 0
 	for _, m := range members {
 		if s.active[m.Name] > 0 {
@@ -28,7 +34,10 @@ func (s *domainState) pick(members []*Proxy, rule Rule, sel Selector) *Proxy {
 		if rule.MaxConnsPerProxy > 0 && int(m.Active()) >= rule.MaxConnsPerProxy {
 			continue
 		}
-		candidates = append(candidates, m)
+		if slices.Contains(avoid, m.Name) {
+			continue
+		}
+		candidates = append(candidates, Candidate{Proxy: m, InFlight: s.active[m.Name]})
 	}
 
 	// Рабочий набор набран — новые прокси в ротацию не пускаем,
@@ -36,7 +45,7 @@ func (s *domainState) pick(members []*Proxy, rule Rule, sel Selector) *Proxy {
 	if rule.MaxParallelProxies > 0 && inUse >= rule.MaxParallelProxies {
 		narrowed := candidates[:0:0]
 		for _, c := range candidates {
-			if s.active[c.Name] > 0 {
+			if c.InFlight > 0 {
 				narrowed = append(narrowed, c)
 			}
 		}
@@ -52,7 +61,7 @@ func (s *domainState) pick(members []*Proxy, rule Rule, sel Selector) *Proxy {
 	if sel != nil {
 		chosen = sel(s.domain, candidates)
 	} else {
-		chosen = candidates[int(s.rr%uint64(len(candidates)))]
+		chosen = candidates[int(s.rr%uint64(len(candidates)))].Proxy
 		s.rr++
 	}
 	if chosen == nil {

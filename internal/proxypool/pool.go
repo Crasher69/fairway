@@ -34,9 +34,20 @@ type Proxy struct {
 // Active — сколько соединений держит прокси прямо сейчас.
 func (p *Proxy) Active() int64 { return p.active.Load() }
 
+// Candidate — прокси, прошедший фильтры пула, вместе с тем, что о нём
+// известно прямо сейчас: сколько соединений он уже держит на этом домене.
+// Стратегии выбора это нужно, чтобы не отдавать непроверенному прокси
+// весь трафик, пока его первые запросы ещё висят без ответа.
+type Candidate struct {
+	Proxy *Proxy
+	// InFlight — активных соединений на этом домене через этот прокси.
+	InFlight int
+}
+
 // Selector выбирает прокси из уже отфильтрованных кандидатов.
-// На этапе 3 сюда встанет рейтинг по (домен, прокси); пока round-robin.
-type Selector func(domain string, candidates []*Proxy) *Proxy
+// Стратегия по умолчанию — round-robin, в рабочем процессе — рейтинг
+// по (домен, прокси).
+type Selector func(domain string, candidates []Candidate) *Proxy
 
 // Pool — текущее состояние: прокси, листы, правила.
 type Pool struct {
@@ -141,7 +152,12 @@ func (l *Lease) Release() {
 }
 
 // Acquire подбирает прокси для домена и занимает под него слот.
-func (p *Pool) Acquire(domain string) (*Lease, error) {
+//
+// avoid — имена прокси, которые брать нельзя: через них этот же запрос
+// уже не прошёл, и повторять его туда же бессмысленно. Если кроме них
+// никого не осталось, возвращается ErrNoProxy — лучше честный отказ,
+// чем третья попытка через заведомо мёртвый прокси.
+func (p *Pool) Acquire(domain string, avoid ...string) (*Lease, error) {
 	p.mu.RLock()
 	rules, lists, allowDirect, direct := p.rules, p.lists, p.allowDirect, p.direct
 	p.mu.RUnlock()
@@ -162,7 +178,7 @@ func (p *Pool) Acquire(domain string) (*Lease, error) {
 	}
 
 	st := p.stateFor(domain)
-	chosen := st.pick(members, rule, p.selector())
+	chosen := st.pick(members, rule, p.selector(), avoid)
 	if chosen == nil {
 		return nil, i18n.Errorf("%w: domain %s, list %s", ErrNoProxy, domain, rule.List)
 	}
@@ -198,6 +214,17 @@ func (p *Pool) Proxies() []*Proxy {
 }
 
 // Rule возвращает правило, под которое попадает домен.
+// InFlight — сколько соединений каждый прокси держит на этом домене прямо
+// сейчас. Для панели: доля трафика считается так же, как в Select, а тому
+// важно, висит ли что-то на непроверенном прокси.
+func (p *Pool) InFlight(domain string) map[string]int {
+	st, ok := p.states.Load(domain)
+	if !ok {
+		return nil
+	}
+	return st.(*domainState).snapshot()
+}
+
 func (p *Pool) Rule(domain string) (Rule, bool) {
 	p.mu.RLock()
 	rules := p.rules

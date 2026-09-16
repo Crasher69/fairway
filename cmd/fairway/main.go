@@ -52,7 +52,8 @@ func main() {
 		adminAddr      = flag.String("admin", "127.0.0.1:8081", "admin panel address (loopback only by default)")
 		configPath     = flag.String("config", "config.json", "config file; created if missing")
 		dataDir        = flag.String("data", "./data", "directory for the CA and rating snapshots")
-		dialTimeout    = flag.Duration("dial-timeout", 15*time.Second, "timeout for connecting to the target via upstream")
+		dialTimeout    = flag.Duration("dial-timeout", 15*time.Second, "timeout for connecting to the target via upstream and for its first byte")
+		tunnelIdle     = flag.Duration("tunnel-idle", forward.DefaultIdleTimeout, "close a tunnel with no traffic in either direction for this long; 0 disables")
 		replayBody     = flag.Int64("replay-body", forward.DefaultReplayBodyLimit, "buffer request bodies up to this size (bytes) in MITM mode so they can be replayed; -1 disables")
 		pollInterval   = flag.Duration("config-poll", config.DefaultPollInterval, "how often to re-read the config")
 		ratingSave     = flag.Duration("ratings-save", 30*time.Second, "how often to save ratings to disk")
@@ -126,6 +127,7 @@ func main() {
 		Pick:            router(pool),
 		Issuer:          issuer,
 		DialTimeout:     *dialTimeout,
+		IdleTimeout:     idleTimeout(*tunnelIdle),
 		ReplayBodyLimit: *replayBody,
 		Logger:          logger,
 		Observe: func(s forward.Sample) {
@@ -215,11 +217,20 @@ func main() {
 	}
 }
 
+// idleTimeout переводит флаг в поле сервера: у флага «0 — выключено»,
+// у сервера ноль означает «по умолчанию», а выключает отрицательное.
+func idleTimeout(flagValue time.Duration) time.Duration {
+	if flagValue <= 0 {
+		return -1
+	}
+	return flagValue
+}
+
 // router связывает пул с прокси-сервером: на каждый запрос берётся lease,
 // который освобождается по завершении обработки.
-func router(pool *proxypool.Pool) func(string) (*forward.Route, error) {
-	return func(domain string) (*forward.Route, error) {
-		lease, err := pool.Acquire(domain)
+func router(pool *proxypool.Pool) func(string, []string) (*forward.Route, error) {
+	return func(domain string, avoid []string) (*forward.Route, error) {
+		lease, err := pool.Acquire(domain, avoid...)
 		if err != nil {
 			return nil, err
 		}

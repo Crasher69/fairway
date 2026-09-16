@@ -67,7 +67,7 @@ func TestServeHTTPThroughDirect(t *testing.T) {
 		samples []Sample
 	)
 	proxySrv := httptest.NewServer(&Server{
-		Pick: func(string) (*Route, error) { return &Route{Upstream: direct, Name: direct.Name}, nil },
+		Pick: func(string, []string) (*Route, error) { return &Route{Upstream: direct, Name: direct.Name}, nil },
 		Observe: func(s Sample) {
 			mu.Lock()
 			samples = append(samples, s)
@@ -146,7 +146,7 @@ func TestConnectTunnelThroughDirect(t *testing.T) {
 	// не дожидается обработчика — ждём замер через канал.
 	samples := make(chan Sample, 1)
 	proxySrv := httptest.NewServer(&Server{
-		Pick:    func(string) (*Route, error) { return &Route{Upstream: direct, Name: direct.Name}, nil },
+		Pick:    func(string, []string) (*Route, error) { return &Route{Upstream: direct, Name: direct.Name}, nil },
 		Observe: func(s Sample) { samples <- s },
 	})
 	defer proxySrv.Close()
@@ -225,7 +225,7 @@ func TestHTTPReusesUpstreamConnection(t *testing.T) {
 	direct, _ := ParseUpstream("direct")
 	var samples []Sample
 	proxySrv := httptest.NewServer(&Server{
-		Pick: func(string) (*Route, error) { return &Route{Upstream: direct, Name: direct.Name}, nil },
+		Pick: func(string, []string) (*Route, error) { return &Route{Upstream: direct, Name: direct.Name}, nil },
 		Observe: func(s Sample) {
 			mu.Lock()
 			samples = append(samples, s)
@@ -282,7 +282,7 @@ func TestHTTPThroughHTTPProxyUpstream(t *testing.T) {
 		if !r.URL.IsAbs() {
 			t.Errorf("до апстрима дошёл запрос не в absolute-form: %s", r.RequestURI)
 		}
-		(&Server{Pick: func(string) (*Route, error) { return &Route{Upstream: direct, Name: "direct"}, nil }}).ServeHTTP(w, r)
+		(&Server{Pick: func(string, []string) (*Route, error) { return &Route{Upstream: direct, Name: "direct"}, nil }}).ServeHTTP(w, r)
 	}))
 	defer upstreamProxy.Close()
 
@@ -291,7 +291,7 @@ func TestHTTPThroughHTTPProxyUpstream(t *testing.T) {
 		t.Fatal(err)
 	}
 	proxySrv := httptest.NewServer(&Server{
-		Pick: func(string) (*Route, error) { return &Route{Upstream: up, Name: "up"}, nil },
+		Pick: func(string, []string) (*Route, error) { return &Route{Upstream: up, Name: "up"}, nil },
 	})
 	defer proxySrv.Close()
 

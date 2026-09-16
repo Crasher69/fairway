@@ -196,30 +196,40 @@ func (r *Registry) Observe(sample forward.Sample) {
 //
 // Порядок такой:
 //  1. забаненные для домена исключаются целиком;
-//  2. непроверенные (замеров меньше minSamples) идут первыми — иначе
-//     новый прокси никогда не наберёт статистику и останется невидимым;
+//  2. непроверенные (замеров меньше minSamples), у которых на домене ничего
+//     не висит, идут первыми — иначе новый прокси никогда не наберёт
+//     статистику и останется невидимым;
 //  3. с вероятностью Epsilon — случайный из оставшихся (разведка);
-//  4. иначе — взвешенный случайный выбор с весом (1/цена)^Sharpness.
+//  4. иначе — взвешенная лотерея с весом (1/цена)^Sharpness. Непроверенные
+//     в ней не участвуют: цены у них ещё нет.
+//
+// Почему в п. 2 важно «ничего не висит». Прокси, который принимает
+// соединение и молчит, не даёт ни одного завершённого замера: он остаётся
+// «непроверенным» сколько угодно, и без этого условия каждый новый запрос
+// уходил бы ему как «дадим шанс новичку». На практике два таких прокси
+// забирали 80% трафика домена, не пропустив ни байта. Теперь новичок
+// получает один запрос на проверку, а следующий — только когда первый
+// завершился (успехом или ошибкой) или его взяла разведка.
 //
 // Взвешенный случайный, а не «всегда лучший»: постоянный победитель забрал бы
 // весь трафик, упёрся в лимит соединений и деградировал, а его замеры перестали
 // бы отражать реальность.
-func (r *Registry) Select(domain string, candidates []*proxypool.Proxy) *proxypool.Proxy {
+func (r *Registry) Select(domain string, candidates []proxypool.Candidate) *proxypool.Proxy {
 	if len(candidates) == 0 {
 		return nil
 	}
 	now := r.now()
 
-	alive := make([]*proxypool.Proxy, 0, len(candidates))
+	alive := make([]proxypool.Candidate, 0, len(candidates))
 	fresh := make([]*proxypool.Proxy, 0, len(candidates))
 	for _, c := range candidates {
-		stats := r.Stats(domain, c.Name)
+		stats := r.Stats(domain, c.Proxy.Name)
 		if banned, _, _ := stats.Banned(now); banned {
 			continue
 		}
 		alive = append(alive, c)
-		if stats.Samples() < minSamples {
-			fresh = append(fresh, c)
+		if stats.Samples() < minSamples && c.InFlight == 0 {
+			fresh = append(fresh, c.Proxy)
 		}
 	}
 	// Все забанены — пусть пул решает, что с этим делать.
@@ -230,13 +240,17 @@ func (r *Registry) Select(domain string, candidates []*proxypool.Proxy) *proxypo
 		return fresh[r.intn(len(fresh))]
 	}
 	if r.random() < r.epsilon() {
-		return alive[r.intn(len(alive))]
+		return alive[r.intn(len(alive))].Proxy
 	}
 
 	weights := make([]float64, len(alive))
 	var total float64
 	for i, c := range alive {
-		cost := r.Stats(domain, c.Name).Cost()
+		stats := r.Stats(domain, c.Proxy.Name)
+		if stats.Samples() < minSamples {
+			continue // замеров нет — цена не значит ничего, в лотерее не участвует
+		}
+		cost := stats.Cost()
 		if cost <= 0 || math.IsNaN(cost) || math.IsInf(cost, 0) {
 			continue // цена не определена — в лотерее не участвует
 		}
@@ -244,17 +258,17 @@ func (r *Registry) Select(domain string, candidates []*proxypool.Proxy) *proxypo
 		total += weights[i]
 	}
 	if total <= 0 {
-		return alive[r.intn(len(alive))]
+		return alive[r.intn(len(alive))].Proxy
 	}
 
 	point := r.random() * total
 	for i, w := range weights {
 		point -= w
 		if point <= 0 {
-			return alive[i]
+			return alive[i].Proxy
 		}
 	}
-	return alive[len(alive)-1]
+	return alive[len(alive)-1].Proxy
 }
 
 func (r *Registry) intn(n int) int {

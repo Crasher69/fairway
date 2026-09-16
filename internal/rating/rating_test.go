@@ -226,9 +226,44 @@ func poolWith(t *testing.T, names ...string) *proxypool.Pool {
 	return pool
 }
 
-func candidates(t *testing.T, pool *proxypool.Pool) []*proxypool.Proxy {
+func candidates(t *testing.T, pool *proxypool.Pool) []proxypool.Candidate {
 	t.Helper()
-	return pool.Proxies()
+	return withInFlight(pool, nil)
+}
+
+// withInFlight собирает кандидатов, у части из которых на домене уже
+// висят соединения.
+func withInFlight(pool *proxypool.Pool, inFlight map[string]int) []proxypool.Candidate {
+	out := make([]proxypool.Candidate, 0, 4)
+	for _, p := range pool.Proxies() {
+		out = append(out, proxypool.Candidate{Proxy: p, InFlight: inFlight[p.Name]})
+	}
+	return out
+}
+
+// TestSelectDoesNotStackRequestsOnUntestedProxy — прокси, который принял
+// соединение и молчит, не даёт замеров и остаётся «непроверенным». Без
+// проверки висящих соединений он получал бы каждый новый запрос как
+// «новичок, дадим шанс», а на деле забирал весь трафик домена.
+func TestSelectDoesNotStackRequestsOnUntestedProxy(t *testing.T) {
+	pool := poolWith(t, "known", "silent")
+	r := NewRegistry()
+	r.Rand = fixedRand(0.99) // без разведки: интересует только правило новичка
+
+	for i := 0; i < 10; i++ {
+		r.Observe(sample("example.com", "known", 10*time.Millisecond, 10*time.Millisecond, 100_000, 200, nil))
+	}
+	// Первый запрос новичку — правильно, так он и должен пройти проверку.
+	if got := r.Select("example.com", withInFlight(pool, nil)); got.Name != "silent" {
+		t.Fatalf("первый запрос должен уйти непроверенному, выбран %s", got.Name)
+	}
+	// Он повис. Следующие запросы не должны ложиться сверху.
+	busy := map[string]int{"silent": 1}
+	for i := 0; i < 20; i++ {
+		if got := r.Select("example.com", withInFlight(pool, busy)); got.Name != "known" {
+			t.Fatalf("запрос %d ушёл непроверенному прокси с висящим соединением", i)
+		}
+	}
 }
 
 func TestSelectPrefersUntestedProxies(t *testing.T) {
@@ -315,7 +350,7 @@ func TestSelectReturnsNilWhenAllBanned(t *testing.T) {
 // round-robin: иначе бан не работал бы вовсе.
 func TestPoolRespectsSelectorRefusal(t *testing.T) {
 	pool := poolWith(t, "p1", "p2")
-	pool.Select = func(string, []*proxypool.Proxy) *proxypool.Proxy { return nil }
+	pool.Select = func(string, []proxypool.Candidate) *proxypool.Proxy { return nil }
 	if _, err := pool.Acquire("example.com"); err == nil {
 		t.Error("пул выдал прокси, хотя стратегия отказала")
 	}

@@ -295,14 +295,24 @@ func (s *Server) domain(w http.ResponseWriter, r *http.Request) {
 	// что произойдёт, а не идеализированную лотерею.
 	epsilon := s.Ratings.EffectiveEpsilon()
 	sharpness := s.Ratings.EffectiveSharpness()
+	inFlight := s.Pool.InFlight(domain)
 	var weightSum float64
-	var alive int
+	var alive, probing int
 	weights := make(map[string]float64, len(snap.Proxies))
 	for name, st := range snap.Proxies {
 		if now.Before(st.BannedUntil) {
 			continue
 		}
 		alive++
+		if st.Samples < rating.MinSamples {
+			// Непроверенный без висящих соединений получит следующий
+			// запрос вне очереди; с висящими — только через разведку.
+			// Цены у него нет, в лотерее он не участвует.
+			if inFlight[name] == 0 {
+				probing++
+			}
+			continue
+		}
 		if st.Cost <= 0 {
 			continue
 		}
@@ -327,10 +337,17 @@ func (s *Server) domain(w http.ResponseWriter, r *http.Request) {
 			BannedUntil: st.BannedUntil,
 			BanReason:   st.BanReason,
 		}
-		if now.Before(st.BannedUntil) {
+		switch {
+		case now.Before(st.BannedUntil):
 			row.Banned = true
 			row.Status = "banned"
-		} else if alive > 0 {
+		case probing > 0:
+			// Следующий запрос уйдёт одному из непроверенных — ровно так
+			// делает Select, остальным в этот момент не достаётся ничего.
+			if st.Samples < rating.MinSamples && inFlight[name] == 0 {
+				row.Share = 1 / float64(probing)
+			}
+		case alive > 0:
 			// Разведка раздаёт epsilon поровну, остальное — по весу.
 			row.Share = epsilon / float64(alive)
 			if weightSum > 0 {
