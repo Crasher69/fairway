@@ -588,3 +588,33 @@ func TestChallengeBansLike403(t *testing.T) {
 		t.Errorf("причина бана %q", reason)
 	}
 }
+
+// TestRetainForgetsRemovedProxies — удалённый из конфига прокси не должен
+// оставаться в таблице домена: в панели он висел со старыми замерами и
+// баном, хотя его уже нет.
+func TestRetainForgetsRemovedProxies(t *testing.T) {
+	r := NewRegistry()
+	r.BanDuration = func(string) time.Duration { return time.Hour }
+	r.Observe(sample("example.com", "gone", 10*time.Millisecond, 10*time.Millisecond, 1000, 403, nil))
+	r.Observe(sample("example.com", "kept", 10*time.Millisecond, 10*time.Millisecond, 100_000, 200, nil))
+	r.Observe(sample("other.com", "gone", 10*time.Millisecond, 10*time.Millisecond, 100_000, 200, nil))
+
+	if removed := r.Retain([]string{"kept"}); removed != 2 {
+		t.Errorf("снесено пар: %d, ожидалось 2", removed)
+	}
+	if got := r.Snapshot("example.com").Proxies; len(got) != 1 {
+		t.Errorf("в домене осталось %d прокси, ожидался один: %v", len(got), got)
+	}
+	// Домен, где кроме удалённого никого не было, исчезает целиком —
+	// иначе в списке доменов остались бы пустые строки.
+	for _, d := range r.Domains() {
+		if d == "other.com" {
+			t.Error("домен без единого прокси должен был исчезнуть")
+		}
+	}
+	// Бан удалённого тоже забыт: вернувшийся под тем же именем прокси
+	// начинает с чистого листа, как новый.
+	if banned, _, _ := r.Stats("example.com", "gone").Banned(time.Now()); banned {
+		t.Error("бан удалённого прокси пережил удаление")
+	}
+}

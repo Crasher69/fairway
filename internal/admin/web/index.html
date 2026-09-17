@@ -16,6 +16,22 @@
   </script>
 </head>
 <body>
+  <!-- The sign-in screen. The panel shell is served without a token so that
+       there is somewhere to type the password; it carries no data of its own. -->
+  <div id="login" class="login-screen" hidden>
+    <form class="login-card" id="login-form">
+      <img class="login-icon" src="icon.svg" alt="">
+      <h1>Fairway</h1>
+      <p class="hint" data-t>The panel is protected by a password.</p>
+      <label class="field"><span data-t>Password</span>
+        <input type="password" name="password" autocomplete="current-password" required>
+      </label>
+      <p class="login-error" id="login-error" hidden></p>
+      <button class="primary" type="submit" data-t>Sign in</button>
+      <p class="hint" data-t>Or open the panel by the link with the token that fairway prints to the log on start.</p>
+    </form>
+  </div>
+
   <!-- The markup is written in English. Elements marked data-t (text),
        data-t-html (text with inline markup), data-t-placeholder and
        data-t-title are translated by i18n.js from the current text, which
@@ -32,6 +48,7 @@
       <button class="tab" data-view="lists" data-t>Lists</button>
       <button class="tab" data-view="rules" data-t>Domains</button>
       <button class="tab" data-view="cert" data-t>Certificate</button>
+      <button class="tab" data-view="access" data-t>Access</button>
     </nav>
     <div class="top-right">
       <span class="chip live" data-t-title title="Proxy address: this is what goes into the browser or application settings">
@@ -494,6 +511,40 @@
     <div class="card">
       <h2 data-t>Other machines on the network</h2>
       <p class="hint" data-t>Download the .crt and import it into “Trusted Root Certification Authorities”. In a domain this is rolled out by group policy. Firefox, Java and Python keep their own stores — add it there separately.</p>
+    </div>
+  </div>
+
+  <!-- Access -->
+  <div id="view-access" class="page settings" hidden>
+    <div class="page-head">
+      <h1 data-t>Access to the panel</h1>
+      <span class="spacer"></span>
+      <button class="ghost" id="logout" data-t>Sign out</button>
+    </div>
+    <p class="page-lead" data-t>Two ways in, and both work at once: the link with a token that fairway prints to the log on start, and a password you set here. The password lives in the config as a hash and survives a restart, unlike the token, which is new on every start unless it is fixed by the -admin-token flag.</p>
+
+    <div class="card">
+      <div class="card-head"><h2 data-t>Password</h2><span id="password-state" class="hint"></span></div>
+      <form id="password-form">
+        <div class="fields">
+          <label class="field"><span data-t>New password</span>
+            <input type="password" name="password" autocomplete="new-password" minlength="8">
+          </label>
+          <label class="field"><span data-t>Repeat</span>
+            <input type="password" name="repeat" autocomplete="new-password" minlength="8">
+          </label>
+        </div>
+        <p class="hint" data-t>At least 8 characters. Everyone signed in with the old password will have to sign in again.</p>
+        <div class="form-actions">
+          <button class="primary" type="submit" data-t>Save password</button>
+          <button class="ghost danger" type="button" id="password-clear" data-t>Remove password</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2 data-t>Token</h2>
+      <p class="hint" data-t-html>The link with the token is printed to the log at every start: <code>admin panel: http://…/?token=…</code>. Opening it saves the token into a cookie, so it is needed only once. A permanent token is set by the <code>-admin-token</code> flag.</p>
     </div>
   </div>
 

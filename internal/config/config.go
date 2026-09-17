@@ -21,11 +21,15 @@ type Config struct {
 	// Language — язык логов, ошибок и панели: en (по умолчанию) или ru.
 	// Хранится в конфиге, а не во флаге, чтобы переключаться из панели
 	// и переживать перезапуск.
-	Language string   `json:"language,omitempty"`
-	Defaults Defaults `json:"defaults"`
-	Proxies  []Proxy  `json:"proxies"`
-	Lists    []List   `json:"lists"`
-	Domains  []Domain `json:"domains"`
+	Language string `json:"language,omitempty"`
+	// AdminPassword — пароль входа в панель, когда ссылки с токеном под
+	// рукой нет. Панель записывает сюда хеш PBKDF2; вписанный руками
+	// открытый текст тоже работает (см. internal/admin/auth.go).
+	AdminPassword string   `json:"admin_password,omitempty"`
+	Defaults      Defaults `json:"defaults"`
+	Proxies       []Proxy  `json:"proxies"`
+	Lists         []List   `json:"lists"`
+	Domains       []Domain `json:"domains"`
 }
 
 // Defaults — правило для доменов, которые не попали ни под один паттерн.

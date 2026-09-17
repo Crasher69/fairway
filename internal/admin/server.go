@@ -1,7 +1,8 @@
 // Package admin — веб-интерфейс и REST API поверх того же процесса.
 //
 // Слушает отдельный адрес, по умолчанию только 127.0.0.1: панель управления
-// прокси не должна торчать в интернет. Доступ закрыт токеном.
+// прокси не должна торчать в интернет. Доступ закрыт токеном или паролем
+// из конфига (см. auth.go).
 package admin
 
 import (
@@ -9,7 +10,6 @@ import (
 	"math"
 	"net"
 	"net/http"
-	"net/url"
 	"runtime"
 	"sort"
 	"strconv"
@@ -42,6 +42,9 @@ type Server struct {
 	// его в подсказке «как начать»: без него человек, впервые открывший
 	// панель, не знает, что прописать в настройках браузера.
 	ProxyAddr string
+
+	sessions sessions // входы по паролю
+	logins   throttle // защита от подбора пароля
 }
 
 // Handler собирает маршруты админки.
@@ -68,53 +71,38 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/domains/{pattern}", s.deleteDomain)
 	mux.HandleFunc("PUT /api/defaults", s.saveDefaults)
 	mux.HandleFunc("PUT /api/language", s.saveLanguage)
+	mux.HandleFunc("PUT /api/password", s.savePassword)
 	mux.HandleFunc("GET /api/ca", s.caInfo)
 	mux.HandleFunc("POST /api/ca/install", s.caInstall)
 	mux.HandleFunc("POST /api/ca/uninstall", s.caUninstall)
 	mux.HandleFunc("GET /ca", s.downloadCA)
 	mux.Handle("GET /", staticHandler())
 
-	// Проба живости стоит перед проверкой токена: Docker и systemd взять его
-	// неоткуда, а данных эндпоинт не раскрывает.
+	// Эти три ручки стоят перед проверкой доступа, и каждая по своей
+	// причине. Проба живости — Docker и systemd взять токен неоткуда,
+	// а данных она не раскрывает. Форма входа и разметка панели — иначе
+	// вводить пароль было бы негде: пустая страница с 401 вместо поля.
+	// Данных в статике нет, только оболочка.
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", s.healthz)
-	root.Handle("/", s.authorized(mux))
+	root.HandleFunc("GET /api/auth", s.authMode)
+	root.HandleFunc("POST /api/login", s.login)
+	root.HandleFunc("POST /api/logout", s.logout)
+	root.Handle("/", s.staticOrAuthorized(mux))
 	return root
 }
 
-// authorized пускает по токену из заголовка, query или cookie.
-// Токен из query сохраняется в cookie: по ссылке из лога панель открывается
-// одним кликом, а дальше работает без него в адресной строке.
-func (s *Server) authorized(next http.Handler) http.Handler {
+// staticOrAuthorized пускает к файлам панели без проверки, а ко всему
+// остальному — только по токену или сессии.
+func (s *Server) staticOrAuthorized(next http.Handler) http.Handler {
+	static := staticHandler()
+	guarded := s.authorized(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.Token == "" {
-			next.ServeHTTP(w, r)
+		if r.Method == http.MethodGet && isStaticPath(r.URL.Path) {
+			static.ServeHTTP(w, r)
 			return
 		}
-		if token := r.URL.Query().Get("token"); token == s.Token {
-			// Значение кодируется: в cookie допустим только ASCII, а токен
-			// пользователь может задать любой, хоть кириллицей.
-			http.SetCookie(w, &http.Cookie{
-				Name:     "fairway_token",
-				Value:    url.QueryEscape(token),
-				Path:     "/",
-				HttpOnly: true,
-				SameSite: http.SameSiteStrictMode,
-			})
-			next.ServeHTTP(w, r)
-			return
-		}
-		if header := r.Header.Get("Authorization"); header == "Bearer "+s.Token {
-			next.ServeHTTP(w, r)
-			return
-		}
-		if cookie, err := r.Cookie("fairway_token"); err == nil {
-			if value, err := url.QueryUnescape(cookie.Value); err == nil && value == s.Token {
-				next.ServeHTTP(w, r)
-				return
-			}
-		}
-		http.Error(w, i18n.T("token required: ?token=… or header Authorization: Bearer …"), http.StatusUnauthorized)
+		guarded.ServeHTTP(w, r)
 	})
 }
 

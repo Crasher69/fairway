@@ -66,7 +66,13 @@ func (e *Editor) edit(change func(*config.Config) error) (*config.Config, error)
 // cloneConfig делает глубокую копию: менять живой конфиг на месте нельзя,
 // его в этот момент читают обработчики запросов.
 func cloneConfig(src *config.Config) *config.Config {
-	dst := &config.Config{Defaults: src.Defaults, Language: src.Language}
+	dst := &config.Config{
+		Defaults: src.Defaults,
+		Language: src.Language,
+		// Пароль панели копируется вместе с остальным: иначе любая правка
+		// из панели молча снимала бы его.
+		AdminPassword: src.AdminPassword,
+	}
 	dst.Proxies = append([]config.Proxy(nil), src.Proxies...)
 	dst.Lists = append([]config.List(nil), src.Lists...)
 	for i, l := range src.Lists {
@@ -84,8 +90,18 @@ func cloneConfig(src *config.Config) *config.Config {
 
 // --- обработчики ---
 
+// configResponse — конфиг для панели без хеша пароля. Хеш браузеру не
+// нужен, а утекать в историю запросов и в открытую вкладку ему незачем:
+// панели достаточно знать, задан пароль или нет.
+type configResponse struct {
+	*config.Config
+	AdminPassword string `json:"admin_password,omitempty"`
+	PasswordSet   bool   `json:"password_set"`
+}
+
 func (s *Server) config(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, s.Config())
+	cfg := s.Config()
+	writeJSON(w, configResponse{Config: cfg, PasswordSet: cfg.AdminPassword != ""})
 }
 
 func (s *Server) addProxy(w http.ResponseWriter, r *http.Request) {

@@ -134,8 +134,11 @@ Supported upstreams: `http://`, `https://`, `socks5://` and `direct`.
 
 ## Panel
 
-Listens on `127.0.0.1:8081` by default, access by token; fairway prints the
-link with the token to the log on start.
+Listens on `127.0.0.1:8081` by default. Two ways in and both work at once:
+the link with a token that fairway prints to the log on start, and a password
+set on the Access tab. The password is kept in the config as a PBKDF2 hash and
+survives a restart, unlike the token, which is new on every start unless it is
+fixed by `-admin-token`.
 
 Per domain it shows which proxies serve it, their latency, throughput, error
 share, expected traffic share and status ("ok", "degraded", "banned until

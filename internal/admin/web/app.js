@@ -65,7 +65,7 @@ function rerenderAll() {
     renderChart();
   }
   if (state.overview) refreshOverview().catch(() => {});
-  if (currentView && currentView !== 'monitor' && currentView !== 'cert') refreshSettings().catch(() => {});
+  if (currentView && !['monitor', 'cert', 'access'].includes(currentView)) refreshSettings().catch(() => {});
   if (currentView === 'cert') refreshCert().catch(() => {});
 }
 
@@ -112,9 +112,57 @@ function color(name) {
 
 async function api(path) {
   const resp = await fetch(path, { headers: { Accept: 'application/json' } });
+  if (resp.status === 401) {
+    // Сессия кончилась или её не было: показываем вход и глушим запрос,
+    // иначе каждые две секунды на экран сыпались бы ошибки.
+    showLogin();
+    throw new Error('unauthorized');
+  }
   if (!resp.ok) throw new Error(path + ': ' + resp.status);
   return resp.json();
 }
+
+// --- вход ---
+
+let loginShown = false;
+
+async function showLogin() {
+  if (loginShown) return;
+  loginShown = true;
+  // Что показать, зависит от того, настроен ли пароль: с одним токеном
+  // вводить в форму нечего, и честнее сказать про ссылку из лога.
+  let mode = 'password';
+  try {
+    mode = (await (await fetch('api/auth')).json()).mode;
+  } catch (e) {}
+  $('login').hidden = false;
+  $('login-form').hidden = mode !== 'password';
+  $('login-form').password.focus();
+}
+
+$('login-form').onsubmit = async (event) => {
+  event.preventDefault();
+  const error = $('login-error');
+  error.hidden = true;
+  const resp = await fetch('api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: $('login-form').password.value }),
+  });
+  if (!resp.ok) {
+    error.textContent = (await resp.text()).trim() || t('status {code}', { code: resp.status });
+    error.hidden = false;
+    return;
+  }
+  // Перезагрузка, а не продолжение с этой же страницы: половина панели
+  // уже получила 401 и осталась пустой.
+  window.location.reload();
+};
+
+$('logout').onclick = async () => {
+  await fetch('api/logout', { method: 'POST' });
+  window.location.reload();
+};
 
 // --- уведомления ---
 
@@ -637,6 +685,35 @@ function openStream() {
   state.stream.onmessage = (msg) => pushEvent(JSON.parse(msg.data));
 }
 
+// --- доступ в панель ---
+
+async function refreshAccess() {
+  const cfg = await api('api/config');
+  $('password-state').textContent = cfg.password_set ? t('password is set') : t('no password, token only');
+  $('password-clear').hidden = !cfg.password_set;
+}
+
+$('password-form').onsubmit = (event) => {
+  event.preventDefault();
+  const form = $('password-form');
+  if (form.password.value !== form.repeat.value) {
+    showConfigError(new Error(t('passwords do not match')));
+    return;
+  }
+  edit(() => send('PUT', 'api/password', { password: form.password.value }), t('Password saved')).then(() => {
+    form.reset();
+    refreshAccess().catch(() => {});
+  });
+};
+
+$('password-clear').onclick = () => {
+  if (!confirm(t('Remove the password? The panel will then be open by token only.'))) return;
+  edit(() => send('PUT', 'api/password', { password: '' }), t('Password removed')).then(() => {
+    $('password-form').reset();
+    refreshAccess().catch(() => {});
+  });
+};
+
 // --- запуск ---
 
 function tick() {
@@ -651,7 +728,7 @@ window.addEventListener('resize', renderChart);
 
 // --- вкладки ---
 
-const views = ['monitor', 'proxies', 'lists', 'rules', 'cert'];
+const views = ['monitor', 'proxies', 'lists', 'rules', 'cert', 'access'];
 
 let currentView = null;
 
@@ -664,6 +741,7 @@ function showView(name) {
   if (currentView && currentView !== name) window.scrollTo(0, 0);
   currentView = name;
   if (name === 'cert') refreshCert().catch(showConfigError);
+  else if (name === 'access') refreshAccess().catch(showConfigError);
   else if (name !== 'monitor') refreshSettings().catch(showConfigError);
   if (name === 'rules' && pendingRulePattern !== null) {
     resetRuleForm();
@@ -787,7 +865,7 @@ function showConfigError(err) {
 // вариант, и показывать надо именно его, а не то, что мы отправили.
 function edit(action, done) {
   $('config-error').hidden = true;
-  action().then(refreshSettings).then(() => toast(done || t('Saved and applied'))).catch(showConfigError);
+  return action().then(refreshSettings).then(() => toast(done || t('Saved and applied'))).catch(showConfigError);
 }
 
 async function refreshSettings() {

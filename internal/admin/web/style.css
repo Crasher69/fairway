@@ -675,3 +675,39 @@ textarea {
   .page { padding: 16px; }
   .chip { display: none; }
 }
+
+/* Экран входа. Отдельный слой поверх панели: под ним уже отрисованная,
+   но пустая разметка, и показывать её без данных незачем. */
+.login-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg);
+}
+
+.login-card {
+  width: min(360px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  text-align: center;
+}
+
+.login-card h1 { margin: 0; font-size: 20px; }
+.login-card .field { text-align: left; }
+.login-card .hint { margin: 0; }
+.login-icon { width: 44px; height: 44px; margin: 0 auto; }
+
+.login-error {
+  margin: 0;
+  color: var(--bad);
+  font-size: 13px;
+}

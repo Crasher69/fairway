@@ -151,6 +151,14 @@ func main() {
 		if err := pool.Apply(updated); err != nil {
 			return err
 		}
+		// Прокси, которого больше нет в конфиге, не должен оставаться в
+		// таблицах доменов со своими замерами и баном. Здесь, а не в
+		// обработчике удаления: прокси убирают и правкой файла руками.
+		names := make([]string, 0, len(updated.Proxies))
+		for _, p := range updated.Proxies {
+			names = append(names, p.Name)
+		}
+		ratings.Retain(names)
 		if updated.Lang() != i18n.Current() {
 			i18n.Set(updated.Lang())
 			logger.Printf(i18n.T("language: %s"), updated.Lang())
@@ -355,6 +363,11 @@ func startAdmin(ctx context.Context, logger *log.Logger, addr string, srv *admin
 		}
 	}()
 	logger.Printf(i18n.T("admin panel: http://%s/?token=%s"), displayAddr(addr), srv.Token)
+	// Про пароль стоит сказать отдельно: с ним ссылка с токеном нужна
+	// только в первый раз, и в логе видно, что вход настроен.
+	if cfg := srv.Config(); cfg != nil && cfg.AdminPassword != "" {
+		logger.Printf(i18n.T("admin panel: password login is on (http://%s/)"), displayAddr(addr))
+	}
 }
 
 // displayAddr делает адрес кликабельным: ":8081" сам по себе в браузер не
