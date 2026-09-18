@@ -99,6 +99,9 @@ func (s *Server) staticOrAuthorized(next http.Handler) http.Handler {
 	guarded := s.authorized(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && isStaticPath(r.URL.Path) {
+			// Токен из ссылки разбирается и здесь: страница отдаётся без
+			// проверки, и иначе cookie не появилась бы вовсе.
+			s.acceptToken(w, r)
 			static.ServeHTTP(w, r)
 			return
 		}

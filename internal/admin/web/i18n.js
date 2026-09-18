@@ -266,6 +266,8 @@ const DICTIONARIES = {
     'Sign out': 'Выйти',
     'Password': 'Пароль',
     'The panel is protected by a password.': 'Панель закрыта паролем.',
+    'The panel is protected by a token.': 'Панель закрыта токеном.',
+    'The token is in the log line “admin panel: http://…/?token=…”. Opening that link works too.': 'Токен есть в строке лога «админка: http://…/?token=…». По этой ссылке панель тоже откроется.',
     'Or open the panel by the link with the token that fairway prints to the log on start.': 'Или откройте панель по ссылке с токеном — fairway печатает её в лог при запуске.',
     'Two ways in, and both work at once: the link with a token that fairway prints to the log on start, and a password you set here. The password lives in the config as a hash and survives a restart, unlike the token, which is new on every start unless it is fixed by the -admin-token flag.': 'Внутрь ведут два пути, и работают оба сразу: ссылка с токеном, которую fairway печатает в лог при запуске, и пароль, заданный здесь. Пароль лежит в конфиге хешем и переживает перезапуск, в отличие от токена: тот при каждом запуске новый, если не закреплён флагом -admin-token.',
     'New password': 'Новый пароль',

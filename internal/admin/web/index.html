@@ -22,13 +22,16 @@
     <form class="login-card" id="login-form">
       <img class="login-icon" src="icon.svg" alt="">
       <h1>Fairway</h1>
-      <p class="hint" data-t>The panel is protected by a password.</p>
-      <label class="field"><span data-t>Password</span>
-        <input type="password" name="password" autocomplete="current-password" required>
+      <p class="hint" id="login-lead" data-t>The panel is protected by a password.</p>
+      <label class="field" id="login-password-field"><span data-t>Password</span>
+        <input type="password" name="password" autocomplete="current-password">
+      </label>
+      <label class="field" id="login-token-field" hidden><span data-t>Token</span>
+        <input type="password" name="token" autocomplete="off">
       </label>
       <p class="login-error" id="login-error" hidden></p>
       <button class="primary" type="submit" data-t>Sign in</button>
-      <p class="hint" data-t>Or open the panel by the link with the token that fairway prints to the log on start.</p>
+      <p class="hint" id="login-note" data-t>Or open the panel by the link with the token that fairway prints to the log on start.</p>
     </form>
   </div>
 

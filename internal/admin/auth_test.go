@@ -226,3 +226,29 @@ func TestLoginThrottled(t *testing.T) {
 		t.Errorf("во время паузы вход отдал %d", code)
 	}
 }
+
+// TestTokenLinkSetsCookie — переход по ссылке из лога обязан положить
+// токен в cookie. Страница панели отдаётся без проверки доступа, и в
+// 0.2.0 токен на ней не разбирался вовсе: HTML приходил, cookie не было,
+// каждый запрос к API получал 401, и человек видел пустой экран.
+func TestTokenLinkSetsCookie(t *testing.T) {
+	e := newEditable(t)
+	e.srv.Token = "секрет"
+
+	c := clientWithJar(t)
+	if code := get(t, c, e.url+"/?token=секрет"); code != http.StatusOK {
+		t.Fatalf("страница панели отдала %d", code)
+	}
+	// Дальше панель ходит в API без токена в адресе — только с cookie.
+	if code := get(t, c, e.url+"/api/overview"); code != http.StatusOK {
+		t.Fatalf("после ссылки с токеном API отдал %d: cookie не поставлена", code)
+	}
+	// Чужой токен cookie не ставит.
+	other := clientWithJar(t)
+	if code := get(t, other, e.url+"/?token=чужой"); code != http.StatusOK {
+		t.Fatalf("страница панели отдала %d", code)
+	}
+	if code := get(t, other, e.url+"/api/overview"); code != http.StatusUnauthorized {
+		t.Errorf("чужой токен пустил в API: %d", code)
+	}
+}

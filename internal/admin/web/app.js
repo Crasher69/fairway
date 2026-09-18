@@ -125,29 +125,54 @@ async function api(path) {
 // --- вход ---
 
 let loginShown = false;
+let loginMode = 'password';
 
+// Что показать, зависит от того, чем закрыта панель. Пароля нет — просим
+// токен: он есть в логе, и вставить его надо один раз, дальше он живёт
+// в cookie. Пустая карточка без единого поля (так было в 0.2.0) выглядит
+// как сломанная панель.
 async function showLogin() {
   if (loginShown) return;
   loginShown = true;
-  // Что показать, зависит от того, настроен ли пароль: с одним токеном
-  // вводить в форму нечего, и честнее сказать про ссылку из лога.
-  let mode = 'password';
   try {
-    mode = (await (await fetch('api/auth')).json()).mode;
+    loginMode = (await (await fetch('api/auth')).json()).mode;
   } catch (e) {}
+  const form = $('login-form');
+  const byPassword = loginMode !== 'token';
+
+  $('login-lead').textContent = byPassword
+    ? t('The panel is protected by a password.')
+    : t('The panel is protected by a token.');
+  $('login-password-field').hidden = !byPassword;
+  $('login-token-field').hidden = byPassword;
+  // required снимается с невидимого поля: иначе браузер откажется
+  // отправлять форму, ругаясь на то, чего не видно.
+  form.password.required = byPassword;
+  form.token.required = !byPassword;
+  $('login-note').textContent = byPassword
+    ? t('Or open the panel by the link with the token that fairway prints to the log on start.')
+    : t('The token is in the log line “admin panel: http://…/?token=…”. Opening that link works too.');
+
   $('login').hidden = false;
-  $('login-form').hidden = mode !== 'password';
-  $('login-form').password.focus();
+  (byPassword ? form.password : form.token).focus();
 }
 
 $('login-form').onsubmit = async (event) => {
   event.preventDefault();
+  const form = $('login-form');
   const error = $('login-error');
   error.hidden = true;
+
+  if (loginMode === 'token') {
+    // Токен проверяет сервер при выдаче страницы и кладёт в cookie —
+    // тем же путём, что и ссылка из лога.
+    window.location.search = '?token=' + encodeURIComponent(form.token.value.trim());
+    return;
+  }
   const resp = await fetch('api/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password: $('login-form').password.value }),
+    body: JSON.stringify({ password: form.password.value }),
   });
   if (!resp.ok) {
     error.textContent = (await resp.text()).trim() || t('status {code}', { code: resp.status });

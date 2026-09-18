@@ -206,6 +206,31 @@ func (s *Server) password() string {
 	return ""
 }
 
+// AcceptToken принимает токен из query и кладёт его в cookie. Возвращает
+// false, если токена в адресе не было или он не тот.
+//
+// Отдельный метод, потому что вызывается дважды: из проверки доступа и
+// перед выдачей самой страницы панели. Страница отдаётся без проверки
+// (иначе пароль вводить негде), и если не разобрать токен здесь, то
+// переход по ссылке из лога закончится пустым экраном: HTML отдан, cookie
+// не поставлена, каждый запрос к API получает 401. Ровно это и случилось
+// в 0.2.0.
+func (s *Server) acceptToken(w http.ResponseWriter, r *http.Request) bool {
+	if s.Token == "" || r.URL.Query().Get("token") != s.Token {
+		return false
+	}
+	// Значение кодируется: в cookie допустим только ASCII, а токен
+	// пользователь может задать любой, хоть кириллицей.
+	http.SetCookie(w, &http.Cookie{
+		Name:     tokenCookie,
+		Value:    url.QueryEscape(s.Token),
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+	return true
+}
+
 // authorized пускает по токену (заголовок, query или cookie) либо по
 // сессии, выданной за пароль. Токен из query сохраняется в cookie: по
 // ссылке из лога панель открывается одним кликом, а дальше работает без
@@ -217,16 +242,7 @@ func (s *Server) authorized(next http.Handler) http.Handler {
 			return
 		}
 		if s.Token != "" {
-			if token := r.URL.Query().Get("token"); token == s.Token {
-				// Значение кодируется: в cookie допустим только ASCII, а токен
-				// пользователь может задать любой, хоть кириллицей.
-				http.SetCookie(w, &http.Cookie{
-					Name:     tokenCookie,
-					Value:    url.QueryEscape(token),
-					Path:     "/",
-					HttpOnly: true,
-					SameSite: http.SameSiteStrictMode,
-				})
+			if s.acceptToken(w, r) {
 				next.ServeHTTP(w, r)
 				return
 			}
