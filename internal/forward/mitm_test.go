@@ -489,3 +489,110 @@ func TestMITMPassesWebSocketUpgrade(t *testing.T) {
 		t.Errorf("замер WebSocket-сессии: статус %d, байт %d, ошибка %v", s.Status, s.Bytes, s.Err)
 	}
 }
+
+// deadUpstream — апстрим, который никуда не ведёт: порт занят и тут же
+// закрыт, соединение через него не встаёт.
+func deadUpstream(t *testing.T) *Upstream {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+	up, err := ParseUpstream("http://" + addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	up.Name = "dead"
+	return up
+}
+
+// TestMITMRetriesThroughAnotherUpstream — в расшифрованном туннеле клиент
+// говорит по TLS с нами, а не с целью, поэтому отказавший апстрим можно
+// заменить прямо посреди работы: клиент этого не замечает и получает
+// нормальный ответ.
+func TestMITMRetriesThroughAnotherUpstream(t *testing.T) {
+	h := &mitmHarness{}
+	h.target = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "ответ через живой прокси")
+	}))
+	t.Cleanup(h.target.Close)
+	h.wire(t)
+
+	// Первый прокси мёртв, второй — прямое соединение.
+	dead := deadUpstream(t)
+	direct, err := ParseUpstream("direct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := h.proxy.Config.Handler.(*Server)
+	srv.Pick = func(_ string, avoid []string) (*Route, error) {
+		if len(avoid) == 0 {
+			return &Route{Upstream: dead, Name: "dead", MITM: true}, nil
+		}
+		return &Route{Upstream: direct, Name: "alive", MITM: true}, nil
+	}
+
+	resp, err := h.client.Get(h.target.URL + "/")
+	if err != nil {
+		t.Fatalf("запрос не прошёл, хотя живой прокси есть: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || string(body) != "ответ через живой прокси" {
+		t.Fatalf("ответ: статус %d, тело %q", resp.StatusCode, body)
+	}
+
+	samples := h.waitSamples(t, 2)
+	if samples[0].Upstream != "dead" || samples[0].Err == nil {
+		t.Errorf("отказ мёртвого прокси не записан замером: %+v", samples[0])
+	}
+	if samples[1].Upstream != "alive" || samples[1].Err != nil || samples[1].Status != http.StatusOK {
+		t.Errorf("замер живого прокси: %+v", samples[1])
+	}
+}
+
+// TestMITMDoesNotRetryAfterTargetAnswered — как только от цели пришли
+// байты, повторять запрос нельзя ни через кого: неизвестно, выполнен он
+// или нет.
+func TestMITMDoesNotRetryAfterTargetAnswered(t *testing.T) {
+	var hits atomic.Int64
+	h := &mitmHarness{}
+	h.target = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		// Заголовки ушли, тело — нет: соединение рвётся на середине.
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			conn.Close()
+		}
+	}))
+	t.Cleanup(h.target.Close)
+	h.wire(t)
+
+	var picks atomic.Int64
+	direct, err := ParseUpstream("direct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := h.proxy.Config.Handler.(*Server)
+	srv.Pick = func(string, []string) (*Route, error) {
+		picks.Add(1)
+		return &Route{Upstream: direct, Name: "direct", MITM: true}, nil
+	}
+
+	resp, err := h.client.Get(h.target.URL + "/")
+	if err == nil {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("запрос выполнен целью %d раз, ожидался один: повтор после ответа опасен", got)
+	}
+	if got := picks.Load(); got != 1 {
+		t.Errorf("маршрут выбирался %d раз: после ответа цели смены прокси быть не должно", got)
+	}
+}

@@ -97,7 +97,9 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if s.Issuer == nil {
 			s.logf(i18n.T("%s: MITM enabled by rule, but certificate issuing is not configured — tunnelling as is"), domain)
 		} else {
-			s.mitmTunnel(w, route, target)
+			// Маршрут возвращается: MITM меняет апстрим при отказе, и
+			// освободить надо тот, на котором туннель закончил работу.
+			route = s.mitmTunnel(w, route, target)
 			return
 		}
 	}

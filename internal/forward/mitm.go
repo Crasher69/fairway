@@ -31,23 +31,27 @@ type CertIssuer interface {
 // TLS-соединение до цели через выбранный апстрим. Никакого пула: HTTP/1.1
 // в рамках соединения всё равно последователен, зато замеры получаются
 // точными, а поведение предсказуемым.
-func (s *Server) mitmTunnel(w http.ResponseWriter, route *Route, target string) {
+//
+// Возвращает маршрут, на котором туннель закончил работу: при отказе
+// апстрима запрос уходит через другой, и освобождать нужно последний,
+// а не тот, с которым туннель начинался.
+func (s *Server) mitmTunnel(w http.ResponseWriter, route *Route, target string) *Route {
 	domain := hostOnly(target)
 
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, i18n.T("connection does not support hijacking"), http.StatusInternalServerError)
-		return
+		return route
 	}
 	clientRaw, _, err := hj.Hijack()
 	if err != nil {
 		s.logf(i18n.T("hijacking connection: %v"), err)
-		return
+		return route
 	}
 	defer clientRaw.Close()
 
 	if _, err := clientRaw.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
-		return
+		return route
 	}
 
 	clientTLS := tls.Server(clientRaw, s.Issuer.ServerConfig(domain))
@@ -60,7 +64,7 @@ func (s *Server) mitmTunnel(w http.ResponseWriter, route *Route, target string) 
 		// зашит pinning. Первые две лечатся на стороне клиента, третья —
 		// только исключением домена (mitm: false).
 		s.logf(i18n.T("%s: client rejected our certificate (%v) — check that the CA is imported; if this is pinning, exclude the domain"), domain, err)
-		return
+		return route
 	}
 	defer clientTLS.Close()
 
@@ -71,15 +75,15 @@ func (s *Server) mitmTunnel(w http.ResponseWriter, route *Route, target string) 
 	for {
 		req, err := http.ReadRequest(clientReader)
 		if err != nil {
-			return // клиент закрыл соединение или прислал мусор
+			return up.route // клиент закрыл соединение или прислал мусор
 		}
 
-		sample := s.roundTrip(up, clientTLS, clientReader, req, domain, route.Name)
+		sample := s.roundTrip(up, clientTLS, clientReader, req, domain)
 		s.observe(sample)
 
 		// После 101 соединение отдано под WebSocket и уже отработало целиком.
 		if sample.Err != nil || req.Close || sample.Status == http.StatusSwitchingProtocols {
-			return
+			return up.route
 		}
 	}
 }
@@ -102,8 +106,14 @@ func isUpgrade(h http.Header) bool {
 // roundTrip проводит один расшифрованный запрос до цели и обратно, попутно
 // снимая замер. В отличие от непрозрачного туннеля здесь виден настоящий
 // HTTP-статус — отсюда точный детект бана.
-func (s *Server) roundTrip(up *mitmUpstream, client net.Conn, clientReader *bufio.Reader, req *http.Request, domain, proxyName string) Sample {
-	sample := Sample{Domain: domain, Upstream: proxyName}
+//
+// Отказавший апстрим заменяется другим прямо посреди туннеля: клиент
+// разговаривает по TLS с нами, а не с целью, поэтому соединение до цели
+// можно переустановить через кого угодно, и клиент этого не заметит. Это
+// и отличает MITM от прозрачного туннеля, где после «200 Connection
+// established» менять уже нечего.
+func (s *Server) roundTrip(up *mitmUpstream, client net.Conn, clientReader *bufio.Reader, req *http.Request, domain string) Sample {
+	sample := Sample{Domain: domain, Upstream: up.route.Name}
 	started := time.Now()
 
 	req.URL.Scheme = "https"
@@ -135,30 +145,61 @@ func (s *Server) roundTrip(up *mitmUpstream, client net.Conn, clientReader *bufi
 	}
 	retriable := rewind != nil
 
-	conn, connect, fresh, err := up.connection()
-	sample.Connect = connect
-	sample.Reused = !fresh
-	if err != nil {
-		return s.fail(sample, started, client, err, up)
-	}
-
-	resp, targetReader, ttfb, received, err := exchange(conn, req, up.timeout)
-	if err != nil && retriable && !fresh && !received {
-		// Цель могла закрыть keep-alive соединение, пока оно простаивало, —
-		// это штатная ситуация, а не отказ прокси. Повторяем только если от
-		// цели не пришло ни байта: получив хотя бы начало ответа, нельзя
-		// знать, выполнила ли она запрос, а повторять POST вслепую опасно.
-		up.close()
-		conn, connect, fresh, err = up.connection()
+	var (
+		avoid        []string
+		resp         *http.Response
+		targetReader *bufio.Reader
+		ttfb         time.Duration
+	)
+	for {
+		conn, connect, fresh, err := up.connection()
 		sample.Connect = connect
-		sample.Reused = false
+		sample.Reused = !fresh
+		var received bool
 		if err == nil {
-			rewind()
-			resp, targetReader, ttfb, _, err = exchange(conn, req, up.timeout)
+			resp, targetReader, ttfb, received, err = exchange(conn, req, up.timeout)
+			if err != nil && retriable && !fresh && !received {
+				// Цель могла закрыть keep-alive соединение, пока оно простаивало, —
+				// это штатная ситуация, а не отказ прокси. Повторяем только если от
+				// цели не пришло ни байта: получив хотя бы начало ответа, нельзя
+				// знать, выполнила ли она запрос, а повторять POST вслепую опасно.
+				up.close()
+				conn, connect, _, err = up.connection()
+				sample.Connect = connect
+				sample.Reused = false
+				if err == nil {
+					rewind()
+					resp, targetReader, ttfb, received, err = exchange(conn, req, up.timeout)
+				}
+			}
 		}
-	}
-	if err != nil {
-		return s.fail(sample, started, client, err, up)
+		if err == nil {
+			break
+		}
+		// Через этот апстрим не вышло. Повторять через другой можно, пока
+		// от цели не пришло ни байта: дальше неизвестно, выполнен ли
+		// запрос. Тело, не влезшее в буфер, тоже не повторить — но если
+		// соединение не встало вовсе, запрос ещё не отправлялся, и тело
+		// цело.
+		if received || (!retriable && up.conn != nil) {
+			return s.fail(sample, started, client, err, up)
+		}
+		next, nextErr := s.nextRoute(domain, up.route, &avoid)
+		if nextErr != nil {
+			// Прокси кончились: nextRoute вернул прежний маршрут, уже
+			// освобождённый, — держать его в туннеле больше незачем.
+			up.route = next
+			return s.fail(sample, started, client, err, up)
+		}
+		// Неудача этого прокси — отдельный замер: из них складывается
+		// доля ошибок и бан, иначе смена прокси прятала бы отказ.
+		sample.Err = err
+		sample.Duration = time.Since(started)
+		s.observe(sample)
+
+		up.switchTo(next)
+		rewind()
+		sample = Sample{Domain: domain, Upstream: next.Name}
 	}
 	defer resp.Body.Close()
 
@@ -169,7 +210,7 @@ func (s *Server) roundTrip(up *mitmUpstream, client net.Conn, clientReader *bufi
 		// Цель согласилась на WebSocket: дальше это не HTTP, а два потока
 		// байт. Отдаём клиенту 101 и копируем в обе стороны, пока одна из
 		// сторон не закроется. Замер — за всю жизнь сокета.
-		sample.Bytes, sample.Err = s.pipeUpgraded(client, clientReader, conn, targetReader, resp)
+		sample.Bytes, sample.Err = s.pipeUpgraded(client, clientReader, up.conn, targetReader, resp)
 		sample.Duration = time.Since(started)
 		up.close()
 		return sample
@@ -352,6 +393,13 @@ func (u *mitmUpstream) close() {
 		u.conn.Close()
 		u.conn = nil
 	}
+}
+
+// switchTo переводит туннель на другой апстрим: соединение до цели через
+// прежний закрывается, следующий запрос установит новое.
+func (u *mitmUpstream) switchTo(route *Route) {
+	u.close()
+	u.route = route
 }
 
 // countingReader считает прочитанные байты тела ответа.

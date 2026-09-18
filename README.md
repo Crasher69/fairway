@@ -67,9 +67,10 @@ connection failure too: the target has to answer within the dial timeout.
 **A request that got no reply through one proxy is retried through another**,
 up to three proxies in total, and the client does not notice. For tunnels
 that covers everything the client sent before the target's first byte (the
-TLS handshake included); for plain HTTP, requests without a body. Once a
-single byte has come back the request is never retried: it may already have
-been executed.
+TLS handshake included); for plain HTTP, requests without a body. In MITM
+mode the upstream is swapped mid-tunnel, because the client speaks TLS to us
+rather than to the target. Once a single byte has come back the request is
+never retried: it may already have been executed.
 
 Ratings survive a restart (`data/ratings.json`).
 
