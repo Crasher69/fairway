@@ -24,12 +24,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tetratelabs/wazero"
+
 	"fairway/internal/admin"
 	"fairway/internal/config"
 	"fairway/internal/events"
 	"fairway/internal/forward"
 	"fairway/internal/i18n"
 	"fairway/internal/mitmca"
+	"fairway/internal/plugin"
 	"fairway/internal/proxypool"
 	"fairway/internal/rating"
 	"fairway/internal/stats"
@@ -53,6 +56,7 @@ func main() {
 		adminAddr      = flag.String("admin", "127.0.0.1:7771", "admin panel address (loopback only by default)")
 		configPath     = flag.String("config", "config.json", "config file; created if missing")
 		dataDir        = flag.String("data", "./data", "directory for the CA and rating snapshots")
+		pluginsDir     = flag.String("plugins", "", "plugins directory; empty — <data>/plugins")
 		dialTimeout    = flag.Duration("dial-timeout", 15*time.Second, "timeout for connecting to the target via upstream and for its first byte")
 		tunnelIdle     = flag.Duration("tunnel-idle", forward.DefaultIdleTimeout, "close a tunnel with no traffic in either direction for this long; 0 disables")
 		replayBody     = flag.Int64("replay-body", forward.DefaultReplayBodyLimit, "buffer request bodies up to this size (bytes) in MITM mode so they can be replayed; -1 disables")
@@ -169,6 +173,18 @@ func main() {
 	}
 
 	readConfig := func() *config.Config { return currentConfig.Load().(*config.Config) }
+
+	if *pluginsDir == "" {
+		*pluginsDir = filepath.Join(*dataDir, "plugins")
+	}
+	plugins := plugin.NewManager(*pluginsDir, plugin.Host{Config: readConfig, Bus: bus}, logger)
+	// Скомпилированные модули кешируются на диске: иначе каждый запуск
+	// fairway платил бы секундами компиляции за каждый плагин.
+	if cache, err := wazero.NewCompilationCacheWithDir(filepath.Join(*dataDir, "plugin-cache")); err == nil {
+		plugins.Cache = cache
+	} else {
+		logger.Printf(i18n.T("plugin cache disabled: %v"), err)
+	}
 	applyConfig := func(updated *config.Config) error {
 		if err := pool.Apply(updated); err != nil {
 			return err
@@ -183,6 +199,7 @@ func main() {
 		}
 		currentConfig.Store(updated)
 		describe(logger, updated, pool)
+		plugins.Apply(updated)
 		bus.Publish(events.ConfigApplied, events.ConfigAppliedData{
 			Proxies: len(updated.Proxies),
 			Lists:   len(updated.Lists),
@@ -226,6 +243,11 @@ func main() {
 			func(err error) { logger.Printf(i18n.T("config not reloaded: %v"), err) },
 		)
 	}
+	// Плагинам достаётся тот же редактор, что и панели: без файла конфига
+	// (-upstream) менять им нечего, и config.edit ответит ошибкой.
+	plugins.Host.Editor = adminSrv.Editor
+	plugins.Apply(cfg)
+	go plugins.Run(ctx)
 	startAdmin(ctx, logger, *adminAddr, adminSrv)
 
 	logger.Printf(i18n.T("fairway %s: proxy on %s, config %s, data in %s"),

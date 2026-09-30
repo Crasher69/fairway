@@ -35,6 +35,9 @@ type Config struct {
 	Proxies   []Proxy   `json:"proxies"`
 	Lists     []List    `json:"lists"`
 	Domains   []Domain  `json:"domains"`
+	// Plugins — какие плагины включены, какие права им выданы и их
+	// настройки. Сами плагины лежат в каталоге плагинов (см. internal/plugin).
+	Plugins []Plugin `json:"plugins,omitempty"`
 
 	// migrated — Validate дописал прокси id или перевёл ссылки листов
 	// с имён на id. Load по нему сохраняет файл обратно, чтобы id не
@@ -95,6 +98,39 @@ func (a ProxyAuth) validate() error {
 			return i18n.Errorf("proxy_auth.users[%d]: login %q is already taken", i, u.Login)
 		}
 		logins[u.Login] = true
+	}
+	return nil
+}
+
+// Plugin — запись о плагине в конфиге. Плагин, которого здесь нет, считается
+// выключенным.
+type Plugin struct {
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+	// Granted — права, которые админ выдал плагину. Плагин запускается,
+	// только если здесь есть всё, что он просит в манифесте: новая версия
+	// с новыми правами не получит их молча.
+	Granted []string `json:"granted,omitempty"`
+	// Settings — настройки плагина как есть: их схему знает только плагин.
+	Settings json.RawMessage `json:"settings,omitempty"`
+}
+
+func validatePlugins(plugins []Plugin) error {
+	names := make(map[string]bool, len(plugins))
+	for i, p := range plugins {
+		switch {
+		case p.Name == "":
+			return i18n.Errorf("plugins[%d]: empty name", i)
+		case names[p.Name]:
+			return i18n.Errorf("plugins[%d]: plugin %q is listed twice", i, p.Name)
+		}
+		names[p.Name] = true
+		if len(p.Settings) > 0 {
+			var object map[string]json.RawMessage
+			if err := json.Unmarshal(p.Settings, &object); err != nil {
+				return i18n.Errorf("plugins[%d] (%s): settings must be a JSON object", i, p.Name)
+			}
+		}
 	}
 	return nil
 }
@@ -312,6 +348,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := c.ProxyAuth.validate(); err != nil {
+		return err
+	}
+	if err := validatePlugins(c.Plugins); err != nil {
 		return err
 	}
 	proxyNames := make(map[string]string, len(c.Proxies)) // имя -> id

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"sync"
 )
@@ -112,6 +113,11 @@ func (c *Config) Clone() *Config {
 			mitm := *d.MITM
 			dst.Domains[i].MITM = &mitm
 		}
+	}
+	dst.Plugins = append([]Plugin(nil), c.Plugins...)
+	for i, p := range c.Plugins {
+		dst.Plugins[i].Granted = append([]string(nil), p.Granted...)
+		dst.Plugins[i].Settings = append(json.RawMessage(nil), p.Settings...)
 	}
 	return dst
 }
