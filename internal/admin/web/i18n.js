@@ -160,6 +160,8 @@ const DICTIONARIES = {
     'No proxies yet — add one or paste a list from a price sheet': 'Прокси пока нет — добавьте или вставьте список из прайса',
     'none': 'ни в одном',
     'The proxy gets no traffic until it is in a list': 'Прокси не получит трафика, пока не окажется в листе',
+    'Select the whole group': 'Отметить всю группу',
+    'No country': 'Без страны',
     'Delete proxy {name}? It will disappear from lists too.': 'Удалить прокси {name}? Из листов он тоже исчезнет.',
     'Proxy {name} deleted': 'Прокси {name} удалён',
     'Added to list {list}: {n}': 'Добавлено в лист {list}: {n}',

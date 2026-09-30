@@ -1590,79 +1590,166 @@ function memberNames(list) {
 
 function visibleProxies() {
   return settings.proxies.filter((p) =>
-    matches(filters.proxy, p.name, p.host, p.country, p.comment, p.login, p.port));
+    matches(filters.proxy, p.name, p.host, p.country, countryName(p.country), p.comment, p.login, p.port));
 }
+
+// countryCode приводит страну прокси к ключу группы: в конфиге её пишут
+// руками («ru», « RU»), а плагины — кодом ISO в верхнем регистре.
+const countryCode = (country) => String(country ?? '').trim().toUpperCase();
+
+// countryName — название страны на языке панели. Браузер знает названия
+// по коду ISO сам; если в поле не код, а произвольный текст, показываем
+// его как есть.
+function countryName(country) {
+  const code = countryCode(country);
+  if (!code) return '';
+  if (/^[A-Z]{2}$/.test(code)) {
+    try {
+      const name = new Intl.DisplayNames([lang], { type: 'region' }).of(code);
+      if (name && name !== code) return name;
+    } catch (e) { /* старый браузер или неизвестный код */ }
+  }
+  return String(country).trim();
+}
+
+// groupByCountry раскладывает прокси по странам: группы по алфавиту
+// названий, прокси без страны — последней группой. Внутри группы порядок
+// как в конфиге.
+function groupByCountry(proxies) {
+  const groups = new Map();
+  for (const p of proxies) {
+    const code = countryCode(p.country);
+    if (!groups.has(code)) groups.set(code, { code, name: countryName(p.country), proxies: [] });
+    groups.get(code).proxies.push(p);
+  }
+  return [...groups.values()].sort((a, b) => {
+    if (!a.code !== !b.code) return a.code ? -1 : 1;
+    return a.name.localeCompare(b.name, locale());
+  });
+}
+
+const PROXY_COLUMNS = 9;
 
 function renderProxyTable() {
   const body = $('cfg-proxies').querySelector('tbody');
   $('proxy-count').textContent = settings.proxies.length ? `${settings.proxies.length}` : '';
   renderBulkBar();
   if (!settings.proxies.length) {
-    body.replaceChildren(emptyRow(10, t('No proxies yet — add one or paste a list from a price sheet')));
+    body.replaceChildren(emptyRow(PROXY_COLUMNS, t('No proxies yet — add one or paste a list from a price sheet')));
     return;
   }
   const shown = visibleProxies();
   $('proxy-check-all').checked = shown.length > 0 && shown.every((p) => checked.has(p.name));
   if (!shown.length) {
-    body.replaceChildren(emptyRow(10, t('Nothing matches the search')));
+    body.replaceChildren(emptyRow(PROXY_COLUMNS, t('Nothing matches the search')));
     return;
   }
-  body.replaceChildren(...shown.map((p) => {
-    const tr = document.createElement('tr');
+  const groups = groupByCountry(shown);
+  // Одна группа «без страны» — заголовок над ней ничего не добавляет.
+  if (groups.length === 1 && !groups[0].code) {
+    body.replaceChildren(...shown.map(proxyRow));
+    return;
+  }
+  body.replaceChildren(...groups.flatMap((g) => [groupRow(g), ...g.proxies.map(proxyRow)]));
+}
 
-    const check = document.createElement('td');
-    check.className = 'check';
-    const box = document.createElement('input');
-    box.type = 'checkbox';
-    box.checked = checked.has(p.name);
-    box.onchange = () => {
+// groupRow — заголовок группы стран. Галочка в нём отмечает всю группу,
+// чтобы разом добавить, скажем, все немецкие прокси в лист.
+function groupRow(group) {
+  const tr = document.createElement('tr');
+  tr.className = 'group-row';
+
+  const check = document.createElement('td');
+  check.className = 'check';
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  const marked = group.proxies.filter((p) => checked.has(p.name)).length;
+  box.checked = marked === group.proxies.length;
+  box.indeterminate = marked > 0 && !box.checked;
+  box.title = t('Select the whole group');
+  box.onchange = () => {
+    for (const p of group.proxies) {
       if (box.checked) checked.add(p.name); else checked.delete(p.name);
-      renderBulkBar();
-      $('proxy-check-all').checked = visibleProxies().every((q) => checked.has(q.name));
-    };
-    check.append(box);
-
-    const name = textCell(p.name);
-    name.className = 'name';
-    name.title = 'ID: ' + p.id;
-    const host = textCell(p.host);
-    host.className = 'name';
-
-    const inLists = document.createElement('td');
-    const names = listsOf(p.id);
-    if (names.length) {
-      inLists.append(...names.map((n) => {
-        const tag = document.createElement('span');
-        tag.className = 'list-tag';
-        tag.textContent = n;
-        return tag;
-      }));
-    } else {
-      inLists.textContent = t('none');
-      inLists.className = 'dim';
-      inLists.title = t('The proxy gets no traffic until it is in a list');
     }
+    renderProxyTable();
+  };
+  check.append(box);
 
-    tr.append(
-      check,
-      name,
-      textCell(p.scheme),
-      host,
-      cell(p.port || '—'),
-      textCell(p.login),
-      textCell(p.country),
-      inLists,
-      textCell(p.comment),
-      actionCell(
-        button(t('Edit'), () => startProxyEdit(p), 'ghost'),
-        button(t('Delete'), () => {
-          if (!confirm(t('Delete proxy {name}? It will disappear from lists too.', { name: p.name }))) return;
-          edit(() => send('DELETE', 'api/proxies/' + encodeURIComponent(p.name)), t('Proxy {name} deleted', { name: p.name }));
-        }, 'ghost danger'),
-      ),
-    );
-    return tr;
-  }));
+  const title = document.createElement('td');
+  title.colSpan = PROXY_COLUMNS - 1;
+  const name = document.createElement('span');
+  name.className = 'group-name';
+  name.textContent = group.code ? group.name : t('No country');
+  title.append(name);
+  if (group.code && group.name !== group.code) {
+    const flag = document.createElement('span');
+    flag.className = 'flag';
+    flag.textContent = group.code;
+    title.append(' ', flag);
+  }
+  const count = document.createElement('span');
+  count.className = 'group-count';
+  count.textContent = group.proxies.length;
+  title.append(' ', count);
+
+  tr.append(check, title);
+  return tr;
+}
+
+function proxyRow(p) {
+  const tr = document.createElement('tr');
+
+  const check = document.createElement('td');
+  check.className = 'check';
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.checked = checked.has(p.name);
+  box.onchange = () => {
+    if (box.checked) checked.add(p.name); else checked.delete(p.name);
+    // Перерисовка обновит и общую галочку, и галочку группы.
+    renderProxyTable();
+  };
+  check.append(box);
+
+  const name = textCell(p.name);
+  name.className = 'name';
+  name.title = 'ID: ' + p.id;
+  const host = textCell(p.host);
+  host.className = 'name';
+
+  const inLists = document.createElement('td');
+  const names = listsOf(p.id);
+  if (names.length) {
+    inLists.append(...names.map((n) => {
+      const tag = document.createElement('span');
+      tag.className = 'list-tag';
+      tag.textContent = n;
+      return tag;
+    }));
+  } else {
+    inLists.textContent = t('none');
+    inLists.className = 'dim';
+    inLists.title = t('The proxy gets no traffic until it is in a list');
+  }
+
+  tr.append(
+    check,
+    name,
+    textCell(p.scheme),
+    host,
+    cell(p.port || '—'),
+    textCell(p.login),
+    inLists,
+    textCell(p.comment),
+    actionCell(
+      button(t('Edit'), () => startProxyEdit(p), 'ghost'),
+      button(t('Delete'), () => {
+        if (!confirm(t('Delete proxy {name}? It will disappear from lists too.', { name: p.name }))) return;
+        edit(() => send('DELETE', 'api/proxies/' + encodeURIComponent(p.name)), t('Proxy {name} deleted', { name: p.name }));
+      }, 'ghost danger'),
+    ),
+  );
+  return tr;
 }
 
 $('proxy-check-all').onchange = (event) => {
