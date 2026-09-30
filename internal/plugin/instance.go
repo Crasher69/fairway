@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -28,6 +29,7 @@ const (
 	initTimeout      = 30 * time.Second
 	tickTimeout      = 5 * time.Minute
 	eventTimeout     = 30 * time.Second
+	callTimeout      = 30 * time.Second
 )
 
 // instance — один запущенный плагин. Все вызовы модуля идут из одной
@@ -38,6 +40,11 @@ type instance struct {
 	granted  map[Permission]bool
 	host     *Host
 	logger   *log.Logger
+	journal  *journal
+
+	// calls — вызовы со страницы плагина в панели. Их выполняет горутина
+	// плагина между таймером и событиями: модуль однопоточный.
+	calls chan *uiCall
 
 	cache   wazero.CompilationCache
 	runtime wazero.Runtime
@@ -65,7 +72,19 @@ type runtimeStatus struct {
 	LastTick    time.Time
 }
 
-func newInstance(m *Manifest, entry config.Plugin, host *Host, logger *log.Logger) *instance {
+// uiCall — вызов со страницы плагина и канал для ответа.
+type uiCall struct {
+	method string
+	params json.RawMessage
+	reply  chan uiReply
+}
+
+type uiReply struct {
+	result json.RawMessage
+	err    error
+}
+
+func newInstance(m *Manifest, entry config.Plugin, host *Host, logger *log.Logger, j *journal) *instance {
 	granted := make(map[Permission]bool, len(entry.Granted))
 	for _, g := range entry.Granted {
 		// Право действует, только если плагин его просил: выданное
@@ -80,13 +99,19 @@ func newInstance(m *Manifest, entry config.Plugin, host *Host, logger *log.Logge
 		granted:  granted,
 		host:     host,
 		logger:   logger,
+		journal:  j,
+		calls:    make(chan *uiCall),
 		status:   runtimeStatus{State: StateStarting},
 	}
 }
 
 func (in *instance) logf(format string, args ...any) {
+	line := fmt.Sprintf(format, args...)
+	if in.journal != nil {
+		in.journal.add(line)
+	}
 	if in.logger != nil {
-		in.logger.Printf(i18n.T("plugin %s: ")+format, append([]any{in.manifest.Name}, args...)...)
+		in.logger.Printf(i18n.T("plugin %s: ")+"%s", in.manifest.Name, line)
 	}
 }
 
@@ -176,40 +201,46 @@ func (in *instance) close(ctx context.Context) {
 // сам плагин, — *guestError: модуль жив. Любая другая значит, что модуль
 // упал или прерван, и дальше с ним работать нельзя.
 func (in *instance) send(ctx context.Context, timeout time.Duration, msg guestMessage) error {
+	_, err := in.exchange(ctx, timeout, msg)
+	return err
+}
+
+// exchange — send, который возвращает ещё и result из ответа плагина.
+func (in *instance) exchange(ctx context.Context, timeout time.Duration, msg guestMessage) (json.RawMessage, error) {
 	payload, err := json.Marshal(msg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	res, err := in.module.ExportedFunction(exportAlloc).Call(ctx, uint64(len(payload)))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	ptr := uint32(res[0])
 	if !in.module.Memory().Write(ptr, payload) {
-		return i18n.Errorf("%s returned a buffer outside of memory", exportAlloc)
+		return nil, i18n.Errorf("%s returned a buffer outside of memory", exportAlloc)
 	}
 	res, err = in.module.ExportedFunction(exportHandle).Call(ctx, uint64(ptr), uint64(len(payload)))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	outPtr, outLen := uint32(res[0]>>32), uint32(res[0])
 	var reply guestReply
 	if outLen > 0 {
 		out, ok := in.module.Memory().Read(outPtr, outLen)
 		if !ok {
-			return i18n.Errorf("%s returned a reply outside of memory", exportHandle)
+			return nil, i18n.Errorf("%s returned a reply outside of memory", exportHandle)
 		}
 		if err := json.Unmarshal(out, &reply); err != nil {
-			return i18n.Errorf("%s: reply is not JSON: %w", exportHandle, err)
+			return nil, i18n.Errorf("%s: reply is not JSON: %w", exportHandle, err)
 		}
 	}
 	if reply.Error != "" {
-		return &guestError{msg: reply.Error}
+		return nil, &guestError{msg: reply.Error}
 	}
-	return nil
+	return reply.Result, nil
 }
 
 type guestError struct{ msg string }
@@ -313,6 +344,18 @@ func (in *instance) run(ctx context.Context, dir string) {
 				continue
 			}
 			err = in.send(ctx, eventTimeout, guestMessage{Type: messageEvent, Event: &event})
+		case call := <-in.calls:
+			// Контекст плагина, а не запроса панели: закрытая страница не
+			// должна прерывать модуль посреди вызова.
+			var result json.RawMessage
+			result, err = in.exchange(ctx, callTimeout,
+				guestMessage{Type: messageCall, Method: call.method, Params: call.params})
+			call.reply <- uiReply{result: result, err: err}
+			// Отказ плагина — ответ странице, а не ошибка самого плагина.
+			var guestErr *guestError
+			if errors.As(err, &guestErr) {
+				err = nil
+			}
 		}
 		if ctx.Err() != nil {
 			return

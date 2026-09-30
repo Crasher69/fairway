@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -329,4 +330,78 @@ func TestInvalidAndMissingPlugins(t *testing.T) {
 		t.Fatalf("ошибка %q", st.Error)
 	}
 	e.waitState("ghost", StateMissing)
+}
+
+func TestCallFromPanel(t *testing.T) {
+	e := newEnv(t)
+	e.install("caller", manifest("caller", nil))
+	e.setPlugins(config.Plugin{Name: "caller", Enabled: true, Settings: settings(map[string]any{"greeting": "hi"})})
+	e.waitState("caller", StateRunning)
+
+	ctx := context.Background()
+	result, err := e.manager.Call(ctx, "caller", "echo", json.RawMessage(`{"x":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(result) != `{"echo":{"x":1},"greeting":"hi"}` {
+		t.Fatalf("ответ %s", result)
+	}
+	if _, err := e.manager.Call(ctx, "caller", "fail", nil); err == nil || err.Error() != "refused by plugin" {
+		t.Fatalf("отказ плагина: %v", err)
+	}
+	// Паника в обработчике — ошибка вызова, плагин живёт дальше.
+	if _, err := e.manager.Call(ctx, "caller", "panic", nil); err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("паника: %v", err)
+	}
+	if _, err := e.manager.Call(ctx, "caller", "echo", nil); err != nil {
+		t.Fatalf("после паники: %v", err)
+	}
+	if st := e.waitState("caller", StateRunning); st.LastError != "" {
+		t.Fatalf("ошибка вызова со страницы попала в статус плагина: %q", st.LastError)
+	}
+
+	if _, err := e.manager.Call(ctx, "nobody", "echo", nil); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("незапущенный плагин: %v", err)
+	}
+}
+
+func TestPluginUIAndJournal(t *testing.T) {
+	e := newEnv(t)
+	e.install("paged", manifest("paged", nil))
+	e.install("plain", manifest("plain", nil))
+	page := filepath.Join(e.dir, "paged", filepath.FromSlash(UIFile))
+	os.MkdirAll(filepath.Dir(page), 0o755)
+	os.WriteFile(page, []byte("<h1>paged</h1>"), 0o644)
+	e.setPlugins(config.Plugin{Name: "paged", Enabled: true, Settings: settings(map[string]any{"greeting": "journal"})})
+
+	st := e.waitState("paged", StateRunning)
+	if !st.HasUI {
+		t.Fatal("страница плагина не найдена")
+	}
+	if html, err := e.manager.UI("paged"); err != nil || string(html) != "<h1>paged</h1>" {
+		t.Fatalf("страница: %q %v", html, err)
+	}
+	if _, err := e.manager.UI("plain"); !errors.Is(err, ErrNoUI) {
+		t.Fatalf("плагин без страницы: %v", err)
+	}
+
+	lines := e.manager.Log("paged")
+	var texts []string
+	for _, l := range lines {
+		texts = append(texts, l.Text)
+	}
+	if !strings.Contains(strings.Join(texts, "\n"), "hello journal") {
+		t.Fatalf("лог плагина: %v", texts)
+	}
+}
+
+func TestJournalKeepsLastLines(t *testing.T) {
+	var j journal
+	for i := range journalSize + 5 {
+		j.add(fmt.Sprint(i))
+	}
+	lines := j.snapshot()
+	if len(lines) != journalSize || lines[0].Text != "5" || lines[len(lines)-1].Text != fmt.Sprint(journalSize+4) {
+		t.Fatalf("%d строк, первая %q, последняя %q", len(lines), lines[0].Text, lines[len(lines)-1].Text)
+	}
 }

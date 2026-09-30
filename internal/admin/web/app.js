@@ -34,6 +34,11 @@ $('theme-toggle').onclick = () => {
   try { localStorage.setItem(THEME_KEY, next); } catch (e) { /* приватный режим */ }
   renderChart();
   if (state.domain) refreshDomain().catch(() => {});
+  // Страница плагина узнаёт тему из window.fairway.theme — собрать заново.
+  if (currentView === 'plugin') {
+    plugins.frameFor = null;
+    renderPluginPage();
+  }
 };
 
 // --- язык ---
@@ -65,7 +70,10 @@ function rerenderAll() {
     renderChart();
   }
   if (state.overview) refreshOverview().catch(() => {});
-  if (currentView && !['monitor', 'cert', 'access'].includes(currentView)) refreshSettings().catch(() => {});
+  if (currentView && !['monitor', 'cert', 'access', 'plugins', 'plugin'].includes(currentView)) refreshSettings().catch(() => {});
+  // Подписи формы и страница плагина — на новом языке.
+  if (currentView === 'plugin') plugins.formFor = plugins.frameFor = null;
+  refreshPlugins().catch(() => {});
   if (currentView === 'cert') refreshCert().catch(() => {});
 }
 
@@ -775,6 +783,562 @@ $('password-clear').onclick = () => {
   });
 };
 
+// --- плагины ---
+
+// Плагины живут в своём разделе: меню в шапке со страницами включённых
+// плагинов, страница «Плагины» со всеми установленными и страница каждого
+// плагина. Страница плагина собирается панелью сама (статус, настройки по
+// схеме из манифеста, права, лог), а если в пакете есть ui/index.html —
+// сверху показывается и она, в изолированном iframe.
+
+const plugins = {
+  list: [],        // ответ api/plugins
+  dir: '',
+  current: null,   // имя открытого плагина
+  frameFor: null,  // чья страница сейчас в iframe
+  formFor: null,   // для чьих настроек нарисована форма
+};
+
+// Что значит каждое право — человеческими словами. Их видят при включении
+// плагина, поэтому формулировки про то, что плагин сможет сделать.
+function permissionText(perm, hosts) {
+  switch (perm) {
+    case 'config.read': return t('read proxies, lists and domains (with proxy passwords)');
+    case 'config.write': return t('change proxies, lists and domains');
+    case 'events': return t('receive events: config applied, proxy banned');
+    case 'schedule': return t('run on a timer');
+    case 'http.fetch': return t('make HTTP requests to: {hosts}', { hosts: (hosts || []).join(', ') || '—' });
+    default: return perm;
+  }
+}
+
+const PLUGIN_STATES = {
+  running: ['ok', 'running'],
+  starting: ['info', 'starting'],
+  failed: ['bad', 'failed'],
+  needs_permissions: ['warn', 'needs permissions'],
+  disabled: ['idle', 'off'],
+  invalid: ['bad', 'broken package'],
+  missing: ['warn', 'not installed'],
+};
+
+function pluginBadge(p) {
+  const [cls, label] = PLUGIN_STATES[p.state] || ['idle', p.state];
+  const el = document.createElement('span');
+  el.className = 'badge ' + cls;
+  el.textContent = t(label);
+  return el;
+}
+
+const pluginTitle = (p) => p.title || p.name;
+
+async function refreshPlugins() {
+  const resp = await api('api/plugins');
+  plugins.list = resp.plugins || [];
+  plugins.dir = resp.dir || '';
+  renderPluginsMenu();
+  if (currentView === 'plugins') renderPluginsTable();
+  if (currentView === 'plugin') renderPluginPage();
+}
+
+// --- меню в шапке ---
+
+function renderPluginsMenu() {
+  const items = $('plugins-menu-items');
+  items.textContent = '';
+  const enabled = plugins.list.filter((p) => p.enabled);
+  for (const p of enabled) {
+    const a = document.createElement('a');
+    a.href = '#plugin/' + encodeURIComponent(p.name);
+    a.setAttribute('role', 'menuitem');
+    if (currentView === 'plugin' && plugins.current === p.name) a.className = 'active';
+    const dot = document.createElement('i');
+    const cls = (PLUGIN_STATES[p.state] || ['idle'])[0];
+    dot.className = 'dot' + (cls === 'ok' || cls === 'bad' || cls === 'warn' ? ' ' + cls : '');
+    const name = document.createElement('span');
+    name.textContent = pluginTitle(p);
+    a.append(dot, name);
+    items.append(a);
+  }
+  $('plugins-menu-empty').hidden = enabled.length > 0;
+}
+
+function setPluginsMenu(open) {
+  const tab = $('plugins-tab');
+  const menu = $('plugins-menu-list');
+  menu.hidden = !open;
+  tab.setAttribute('aria-expanded', String(open));
+  if (!open) return;
+  const rect = tab.getBoundingClientRect();
+  menu.style.top = rect.bottom - 4 + 'px';
+  menu.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - menu.offsetWidth - 8)) + 'px';
+}
+
+$('plugins-tab').onclick = (event) => {
+  event.stopPropagation();
+  setPluginsMenu($('plugins-menu-list').hidden);
+};
+$('plugins-menu-list').onclick = () => setPluginsMenu(false);
+document.addEventListener('click', (event) => {
+  if (!$('plugins-menu').contains(event.target)) setPluginsMenu(false);
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') setPluginsMenu(false);
+});
+window.addEventListener('resize', () => setPluginsMenu(false));
+window.addEventListener('scroll', () => setPluginsMenu(false), { passive: true });
+
+// --- включение и права ---
+
+// askPermissions показывает, что плагин сможет делать, и спрашивает
+// согласия. Права выдаются ровно те, что просит манифест.
+function askPermissions(p) {
+  const perms = p.permissions || [];
+  if (!perms.length) return true;
+  const lines = perms.map((perm) => '• ' + permissionText(perm, p.http_hosts));
+  return window.confirm(t('Plugin “{name}” will be able to:', { name: pluginTitle(p) }) + '\n\n' + lines.join('\n'));
+}
+
+function savePlugin(name, body, done) {
+  $('config-error').hidden = true;
+  return send('PUT', 'api/plugins/' + encodeURIComponent(name), body)
+    .then((resp) => {
+      plugins.list = resp.plugins || [];
+      renderPluginsMenu();
+      if (currentView === 'plugins') renderPluginsTable();
+      if (currentView === 'plugin') renderPluginPage();
+      toast(done || t('Saved and applied'));
+    })
+    .catch(showConfigError);
+}
+
+function enablePlugin(p) {
+  if (!askPermissions(p)) return;
+  savePlugin(p.name, { enabled: true, granted: p.permissions || [] }, t('Plugin turned on'));
+}
+
+function disablePlugin(p) {
+  savePlugin(p.name, { enabled: false }, t('Plugin turned off'));
+}
+
+// pluginAction — главная кнопка плагина: включить, выдать недостающие
+// права или выключить.
+function pluginAction(p) {
+  if (p.state === 'invalid' || p.state === 'missing') return null;
+  if (!p.enabled) return [t('Turn on'), () => enablePlugin(p), 'primary'];
+  if (p.state === 'needs_permissions') return [t('Grant permissions'), () => enablePlugin(p), 'primary'];
+  return [t('Turn off'), () => disablePlugin(p), 'ghost'];
+}
+
+// --- страница «Плагины» ---
+
+function renderPluginsTable() {
+  const body = $('cfg-plugins').querySelector('tbody');
+  body.textContent = '';
+  $('plugins-dir').textContent = plugins.dir ? t('folder: {dir}', { dir: plugins.dir }) : '';
+  if (!plugins.list.length) {
+    body.append(emptyRow(5, t('No plugins installed yet.')));
+    return;
+  }
+  for (const p of plugins.list) {
+    const tr = document.createElement('tr');
+
+    const name = document.createElement('td');
+    const title = document.createElement('div');
+    title.className = 'plugin-name';
+    const link = document.createElement('a');
+    link.href = '#plugin/' + encodeURIComponent(p.name);
+    link.textContent = pluginTitle(p);
+    title.append(link);
+    const id = document.createElement('div');
+    id.className = 'plugin-id';
+    id.textContent = p.name;
+    name.append(title, id);
+    if (p.description) {
+      const desc = document.createElement('div');
+      desc.className = 'plugin-desc';
+      desc.textContent = p.description;
+      name.append(desc);
+    }
+
+    const state = document.createElement('td');
+    state.append(pluginBadge(p));
+    if (p.error) {
+      const err = document.createElement('div');
+      err.className = 'hint status-err';
+      err.textContent = p.error;
+      state.append(err);
+    }
+
+    const perms = document.createElement('td');
+    const permList = document.createElement('div');
+    permList.className = 'perm-list';
+    const missing = new Set(p.missing_permissions || []);
+    for (const perm of p.permissions || []) {
+      const code = document.createElement('code');
+      code.textContent = perm;
+      code.title = permissionText(perm, p.http_hosts);
+      if (p.enabled && missing.has(perm)) code.className = 'missing';
+      permList.append(code);
+    }
+    if (!(p.permissions || []).length) permList.textContent = '—';
+    perms.append(permList);
+
+    const buttons = [button(t('Open'), () => { window.location.hash = 'plugin/' + encodeURIComponent(p.name); }, 'ghost')];
+    const action = pluginAction(p);
+    if (action) buttons.unshift(button(...action));
+
+    tr.append(name, textCell(p.version), state, perms, actionCell(...buttons));
+    body.append(tr);
+  }
+}
+
+$('plugins-rescan').onclick = () => {
+  // Перечитать конфиг — значит заново свериться с каталогом плагинов:
+  // менеджер обходит его при каждом применении конфига.
+  send('POST', 'api/config/reload')
+    .then(() => new Promise((resolve) => setTimeout(resolve, 300)))
+    .then(refreshPlugins)
+    .then(() => toast(t('Plugins folder rescanned')))
+    .catch(showConfigError);
+};
+
+// --- страница плагина ---
+
+function currentPlugin() {
+  return plugins.list.find((p) => p.name === plugins.current) || null;
+}
+
+function openPluginPage(name) {
+  plugins.current = name;
+  plugins.formFor = null;
+  plugins.frameFor = null;
+  $('plugin-frame').srcdoc = '';
+  refreshPlugins().then(refreshPluginLog).catch(showConfigError);
+}
+
+function renderPluginPage() {
+  const p = currentPlugin();
+  if (!p) {
+    $('plugin-title').textContent = plugins.current || '—';
+    $('plugin-version').textContent = '';
+    $('plugin-state').textContent = '';
+    $('plugin-description').textContent = t('This plugin is not installed.');
+    $('plugin-toggle').hidden = true;
+    return;
+  }
+  $('plugin-title').textContent = pluginTitle(p);
+  $('plugin-version').textContent = p.version ? 'v' + p.version : '';
+  $('plugin-state').replaceChildren(pluginBadge(p));
+  $('plugin-description').textContent = p.description || '';
+
+  const toggle = $('plugin-toggle');
+  const action = pluginAction(p);
+  toggle.hidden = !action;
+  if (action) {
+    toggle.textContent = action[0];
+    toggle.onclick = action[1];
+    toggle.className = action[2];
+  }
+
+  const error = $('plugin-error');
+  error.hidden = !p.error;
+  error.textContent = p.error || '';
+
+  const facts = [];
+  if (p.last_tick) facts.push(t('last run by timer') + ' <b>' + escapeHTML(clock(p.last_tick)) + '</b>');
+  if (p.last_error) facts.push(t('last error') + ' <b>' + escapeHTML(clock(p.last_error_at)) + '</b>: ' + escapeHTML(p.last_error));
+  $('plugin-facts').innerHTML = facts.join(' &nbsp;·&nbsp; ');
+  $('plugin-facts').hidden = !facts.length;
+
+  renderPluginPerms(p);
+  if (plugins.formFor !== p.name) {
+    renderPluginSettings(p);
+    plugins.formFor = p.name;
+  }
+  renderPluginFrame(p);
+}
+
+function escapeHTML(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+
+function renderPluginPerms(p) {
+  const list = $('plugin-perms');
+  list.textContent = '';
+  const missing = new Set(p.missing_permissions || []);
+  for (const perm of p.permissions || []) {
+    const li = document.createElement('li');
+    const code = document.createElement('code');
+    code.textContent = perm;
+    const text = document.createElement('span');
+    text.textContent = permissionText(perm, p.http_hosts);
+    li.append(code, text);
+    if (p.enabled && missing.has(perm)) {
+      const note = document.createElement('span');
+      note.className = 'missing';
+      note.textContent = t('not granted');
+      li.append(note);
+    }
+    list.append(li);
+  }
+  if (!(p.permissions || []).length) {
+    const li = document.createElement('li');
+    li.className = 'muted';
+    li.textContent = t('The plugin asks for no permissions.');
+    list.append(li);
+  }
+}
+
+// --- настройки по схеме ---
+
+// Форма строится по settings_schema из манифеста: строки, числа, флаги и
+// выбор из списка. Всё, что сложнее, правится как JSON — поле для поля,
+// а без схемы — все настройки целиком.
+function renderPluginSettings(p) {
+  const box = $('plugin-settings-fields');
+  box.textContent = '';
+  const values = p.settings && typeof p.settings === 'object' ? p.settings : {};
+  const schema = p.settings_schema;
+  const props = schema && schema.type === 'object' && schema.properties;
+
+  if (!props || !Object.keys(props).length) {
+    const field = document.createElement('label');
+    field.className = 'field';
+    const caption = document.createElement('span');
+    caption.textContent = t('Settings (JSON)');
+    const area = document.createElement('textarea');
+    area.name = '__all';
+    area.spellcheck = false;
+    area.value = JSON.stringify(values, null, 2);
+    field.append(caption, area);
+    const hint = document.createElement('p');
+    hint.className = 'hint';
+    hint.textContent = t('The plugin does not describe its settings, so they are edited as JSON.');
+    box.append(field, hint);
+    return;
+  }
+
+  for (const [key, prop] of Object.entries(props)) {
+    const value = key in values ? values[key] : prop.default;
+    const caption = document.createElement('span');
+    caption.textContent = prop.title || key;
+    let field;
+    if (prop.type === 'boolean') {
+      field = document.createElement('label');
+      field.className = 'toggle';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.name = key;
+      input.dataset.kind = 'boolean';
+      input.checked = !!value;
+      field.append(input, caption);
+    } else {
+      field = document.createElement('label');
+      field.className = 'field';
+      let input;
+      if (Array.isArray(prop.enum)) {
+        input = document.createElement('select');
+        for (const option of prop.enum) {
+          const el = document.createElement('option');
+          el.value = JSON.stringify(option);
+          el.textContent = String(option);
+          input.append(el);
+        }
+        input.value = JSON.stringify(value ?? prop.enum[0]);
+        input.dataset.kind = 'enum';
+      } else if (prop.type === 'string') {
+        input = document.createElement('input');
+        input.type = prop.format === 'password' ? 'password' : 'text';
+        input.autocomplete = 'off';
+        input.value = value ?? '';
+        input.dataset.kind = 'string';
+      } else if (prop.type === 'number' || prop.type === 'integer') {
+        input = document.createElement('input');
+        input.type = 'number';
+        if (prop.type === 'integer') input.step = '1';
+        if (prop.minimum !== undefined) input.min = prop.minimum;
+        if (prop.maximum !== undefined) input.max = prop.maximum;
+        input.value = value ?? '';
+        input.dataset.kind = prop.type;
+      } else {
+        input = document.createElement('textarea');
+        input.spellcheck = false;
+        input.value = value === undefined ? '' : JSON.stringify(value, null, 2);
+        input.dataset.kind = 'json';
+      }
+      input.name = key;
+      field.append(caption, input);
+    }
+    box.append(field);
+    if (prop.description) {
+      const hint = document.createElement('p');
+      hint.className = 'hint';
+      hint.style.margin = '-8px 0 0';
+      hint.textContent = prop.description;
+      box.append(hint);
+    }
+  }
+}
+
+function collectPluginSettings() {
+  const box = $('plugin-settings-fields');
+  const all = box.querySelector('[name="__all"]');
+  if (all) {
+    const parsed = all.value.trim() ? JSON.parse(all.value) : {};
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(t('Settings must be a JSON object'));
+    return parsed;
+  }
+  const settings = {};
+  for (const input of box.querySelectorAll('[data-kind]')) {
+    const key = input.name;
+    switch (input.dataset.kind) {
+      case 'boolean': settings[key] = input.checked; break;
+      case 'enum': settings[key] = JSON.parse(input.value); break;
+      case 'string': if (input.value !== '') settings[key] = input.value; break;
+      case 'number':
+      case 'integer':
+        if (input.value !== '') settings[key] = Number(input.value);
+        break;
+      default:
+        if (input.value.trim()) {
+          try {
+            settings[key] = JSON.parse(input.value);
+          } catch (err) {
+            throw new Error(key + ': ' + err.message);
+          }
+        }
+    }
+  }
+  return settings;
+}
+
+$('plugin-settings').onsubmit = (event) => {
+  event.preventDefault();
+  let settings;
+  try {
+    settings = collectPluginSettings();
+  } catch (err) {
+    showConfigError(err);
+    return;
+  }
+  plugins.formFor = null; // после сохранения — форма из того, что принял сервер
+  savePlugin(plugins.current, { settings }, t('Settings saved, the plugin restarts'));
+};
+
+// --- лог ---
+
+async function refreshPluginLog() {
+  if (currentView !== 'plugin' || !plugins.current) return;
+  const lines = await api('api/plugins/' + encodeURIComponent(plugins.current) + '/log');
+  const box = $('plugin-log');
+  // Лог прокручен к концу — держим его там; читают середину — не дёргаем.
+  const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
+  box.textContent = '';
+  if (!lines.length) {
+    box.textContent = t('Nothing in the log yet.');
+    return;
+  }
+  for (const line of lines) {
+    const time = document.createElement('span');
+    time.className = 't';
+    time.textContent = clock(line.at);
+    box.append(time, line.text + '\n');
+  }
+  if (atEnd) box.scrollTop = box.scrollHeight;
+}
+
+// --- страница самого плагина в iframe ---
+
+// Страница плагина вставляется через srcdoc в iframe без allow-same-origin:
+// у её скриптов нет ни cookie панели, ни доступа к API. Всё, что ей можно, —
+// вызвать свой плагин через window.fairway.call: запрос уходит сообщением
+// в панель, панель передаёт его плагину и возвращает ответ.
+const PLUGIN_BRIDGE = `<script>(() => {
+  let seq = 0;
+  const waiting = new Map();
+  addEventListener('message', (e) => {
+    if (e.source !== parent) return;
+    const m = e.data || {};
+    const w = waiting.get(m.id);
+    if (!w) return;
+    waiting.delete(m.id);
+    if (m.error) w[1](new Error(m.error)); else w[0](m.result);
+  });
+  // Тема панели — сразу на корень страницы: color-scheme даёт тёмные фон,
+  // текст и поля ввода без единой строки CSS у плагина, а data-theme —
+  // зацепку для его собственных стилей.
+  document.documentElement.dataset.theme = __THEME__;
+  document.documentElement.style.colorScheme = __THEME__;
+  window.fairway = {
+    lang: __LANG__,
+    theme: __THEME__,
+    call(method, params) {
+      return new Promise((resolve, reject) => {
+        const id = ++seq;
+        waiting.set(id, [resolve, reject]);
+        parent.postMessage({ fairway: 'call', id, method, params }, '*');
+      });
+    },
+  };
+  // Высота — по body, а не по документу: документ не бывает ниже самого
+  // iframe, и по нему страница только росла бы.
+  const report = () => {
+    const body = document.body;
+    if (!body) return;
+    const style = getComputedStyle(body);
+    const height = body.getBoundingClientRect().height + parseFloat(style.marginTop) + parseFloat(style.marginBottom);
+    parent.postMessage({ fairway: 'height', value: Math.ceil(height) }, '*');
+  };
+  addEventListener('DOMContentLoaded', () => {
+    report();
+    new ResizeObserver(report).observe(document.body);
+  });
+})();<\/script>`;
+
+async function renderPluginFrame(p) {
+  const card = $('plugin-ui-card');
+  card.hidden = !p.has_ui;
+  $('plugin-ui-stopped').hidden = p.state === 'running';
+  if (!p.has_ui || plugins.frameFor === p.name) return;
+  plugins.frameFor = p.name;
+  const resp = await fetch('api/plugins/' + encodeURIComponent(p.name) + '/ui');
+  if (!resp.ok) {
+    card.hidden = true;
+    return;
+  }
+  const html = await resp.text();
+  const bridge = PLUGIN_BRIDGE
+    .replace('__LANG__', JSON.stringify(lang))
+    .replaceAll('__THEME__', JSON.stringify(isDark() ? 'dark' : 'light'));
+  // Мост — до скриптов плагина: они могут звать fairway сразу. Но после
+  // <!doctype>: всё, что стоит перед ним, переводит страницу в режим quirks.
+  const doctype = html.match(/^\s*<!doctype[^>]*>/i);
+  const at = doctype ? doctype[0].length : 0;
+  $('plugin-frame').srcdoc = html.slice(0, at) + bridge + html.slice(at);
+}
+
+window.addEventListener('message', (event) => {
+  const frame = $('plugin-frame');
+  if (event.source !== frame.contentWindow || !plugins.frameFor) return;
+  const msg = event.data || {};
+  if (msg.fairway === 'height') {
+    frame.style.height = Math.min(Math.max(Number(msg.value) || 0, 120), 4000) + 'px';
+    return;
+  }
+  if (msg.fairway !== 'call') return;
+  const name = plugins.frameFor;
+  send('POST', 'api/plugins/' + encodeURIComponent(name) + '/call', { method: String(msg.method || ''), params: msg.params ?? null })
+    .then((result) => frame.contentWindow.postMessage({ id: msg.id, result }, '*'))
+    .catch((err) => frame.contentWindow.postMessage({ id: msg.id, error: String(err.message || err) }, '*'));
+});
+
+refreshPlugins().catch(() => {});
+setInterval(() => {
+  refreshPlugins().catch(() => {});
+  refreshPluginLog().catch(() => {});
+}, 3000);
+
 // --- запуск ---
 
 function tick() {
@@ -789,19 +1353,24 @@ window.addEventListener('resize', renderChart);
 
 // --- вкладки ---
 
-const views = ['monitor', 'proxies', 'lists', 'rules', 'cert', 'access'];
+const views = ['monitor', 'proxies', 'lists', 'rules', 'cert', 'access', 'plugins', 'plugin'];
 
 let currentView = null;
 
-function showView(name) {
-  if (!views.includes(name)) name = 'monitor';
-  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === name));
+function showView(hash) {
+  // Страница плагина — #plugin/<имя>.
+  let [name, arg] = hash.split(/\/(.*)/s);
+  if (!views.includes(name) || (name === 'plugin' && !arg)) name = 'monitor';
+  document.querySelectorAll('.tab[data-view]').forEach((t) => t.classList.toggle('active', t.dataset.view === name));
+  $('plugins-tab').classList.toggle('active', name === 'plugins' || name === 'plugin');
   for (const view of views) $('view-' + view).hidden = view !== name;
   // Прокрутка от прошлой вкладки не должна оставаться: иначе новая
   // открывается с середины.
   if (currentView && currentView !== name) window.scrollTo(0, 0);
   currentView = name;
-  if (name === 'cert') refreshCert().catch(showConfigError);
+  if (name === 'plugin') openPluginPage(decodeURIComponent(arg));
+  else if (name === 'plugins') refreshPlugins().catch(showConfigError);
+  else if (name === 'cert') refreshCert().catch(showConfigError);
   else if (name === 'access') refreshAccess().catch(showConfigError);
   else if (name !== 'monitor') refreshSettings().catch(showConfigError);
   if (name === 'rules' && pendingRulePattern !== null) {
@@ -812,7 +1381,7 @@ function showView(name) {
   }
 }
 
-document.querySelectorAll('.tab').forEach((tab) => {
+document.querySelectorAll('.tab[data-view]').forEach((tab) => {
   // Вкладка пишется в адрес: перезагрузка не сбрасывает её, а на нужный
   // раздел можно дать ссылку.
   tab.onclick = () => { window.location.hash = tab.dataset.view; };

@@ -18,6 +18,7 @@ import (
 	"fairway/internal/config"
 	"fairway/internal/i18n"
 	"fairway/internal/mitmca"
+	"fairway/internal/plugin"
 	"fairway/internal/proxypool"
 	"fairway/internal/rating"
 	"fairway/internal/stats"
@@ -34,7 +35,9 @@ type Server struct {
 	// а не снимок.
 	Config func() *config.Config
 	// Editor разрешает правку конфига из панели. nil — панель только читает.
-	Editor  *config.Editor
+	Editor *config.Editor
+	// Plugins — менеджер плагинов. nil — плагинов нет.
+	Plugins *plugin.Manager
 	Token   string
 	Version string
 	Started time.Time
@@ -76,6 +79,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/ca", s.caInfo)
 	mux.HandleFunc("POST /api/ca/install", s.caInstall)
 	mux.HandleFunc("POST /api/ca/uninstall", s.caUninstall)
+	mux.HandleFunc("GET /api/plugins", s.plugins)
+	mux.HandleFunc("PUT /api/plugins/{name}", s.savePlugin)
+	mux.HandleFunc("POST /api/plugins/{name}/call", s.pluginCall)
+	mux.HandleFunc("GET /api/plugins/{name}/log", s.pluginLog)
+	mux.HandleFunc("GET /api/plugins/{name}/ui", s.pluginUI)
 	mux.HandleFunc("GET /ca", s.downloadCA)
 	mux.Handle("GET /", staticHandler())
 

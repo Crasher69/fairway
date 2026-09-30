@@ -52,6 +52,16 @@
       <button class="tab" data-view="rules" data-t>Domains</button>
       <button class="tab" data-view="cert" data-t>Certificate</button>
       <button class="tab" data-view="access" data-t>Access</button>
+      <div class="tab-menu" id="plugins-menu">
+        <button class="tab" id="plugins-tab" type="button" aria-haspopup="true" aria-expanded="false">
+          <span data-t>Plugins</span> <svg class="caret" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+        <div class="menu" id="plugins-menu-list" role="menu" hidden>
+          <div id="plugins-menu-items"></div>
+          <p class="menu-empty" id="plugins-menu-empty" data-t>No plugins turned on</p>
+          <a class="menu-manage" href="#plugins" role="menuitem" data-t>Manage plugins</a>
+        </div>
+      </div>
     </nav>
     <div class="top-right">
       <span class="chip live" data-t-title title="Proxy address: this is what goes into the browser or application settings">
@@ -563,6 +573,69 @@
           <button class="primary" type="submit" data-t>Save</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Plugins -->
+  <div id="view-plugins" class="page settings" hidden>
+    <div class="page-head">
+      <h1 data-t>Plugins</h1>
+      <span class="spacer"></span>
+      <button class="ghost" id="plugins-rescan" data-t>Rescan folder</button>
+    </div>
+    <p class="page-lead" data-t>Plugins extend Fairway without rebuilding it: sync proxies with a provider, react to bans, edit lists. Each one runs in a sandbox and gets only the permissions you grant it.</p>
+
+    <div class="card">
+      <div class="card-head"><h2 data-t>Installed</h2><span class="hint" id="plugins-dir"></span></div>
+      <div class="table-wrap">
+        <table id="cfg-plugins">
+          <thead><tr>
+            <th data-t>Plugin</th><th data-t>Version</th><th data-t>Status</th><th data-t>Permissions</th><th></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="hint table-note" data-t-html>To install a plugin, put its folder with <code>manifest.json</code> and <code>plugin.wasm</code> into the plugins folder and press “Rescan folder”. How to write one: <a href="https://github.com/Crasher69/fairway/blob/main/docs/PLUGINS.md" target="_blank" rel="noopener">docs/PLUGINS.md</a>.</p>
+    </div>
+  </div>
+
+  <!-- One plugin -->
+  <div id="view-plugin" class="page settings" hidden>
+    <div class="page-head">
+      <h1 id="plugin-title">—</h1>
+      <span class="brand-version" id="plugin-version"></span>
+      <span id="plugin-state"></span>
+      <span class="spacer"></span>
+      <button class="primary" id="plugin-toggle"></button>
+    </div>
+    <p class="page-lead" id="plugin-description"></p>
+    <div class="banner error" id="plugin-error" hidden></div>
+    <p class="runtime" id="plugin-facts"></p>
+
+    <div class="card plugin-ui" id="plugin-ui-card" hidden>
+      <iframe id="plugin-frame" sandbox="allow-scripts allow-forms" title="Plugin"></iframe>
+      <p class="hint" id="plugin-ui-stopped" hidden data-t>The plugin is not running, so its page cannot talk to it.</p>
+    </div>
+
+    <div class="card">
+      <h2 data-t>Settings</h2>
+      <form id="plugin-settings">
+        <div id="plugin-settings-fields"></div>
+        <div class="form-actions">
+          <button class="primary" type="submit" data-t>Save settings</button>
+          <span class="hint" data-t>The plugin restarts with the new settings.</span>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2 data-t>Permissions</h2>
+      <ul class="plugin-perms" id="plugin-perms"></ul>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2 data-t>Log</h2><span class="hint" data-t>last 200 lines</span></div>
+      <pre class="plugin-log" id="plugin-log"></pre>
     </div>
   </div>
 

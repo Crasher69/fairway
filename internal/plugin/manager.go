@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -47,6 +48,7 @@ type Status struct {
 	HTTPHosts      []string        `json:"http_hosts,omitempty"`
 	Missing        []Permission    `json:"missing_permissions,omitempty"`
 	SettingsSchema json.RawMessage `json:"settings_schema,omitempty"`
+	HasUI          bool            `json:"has_ui"`
 	Enabled        bool            `json:"enabled"`
 	State          State           `json:"state"`
 	Error          string          `json:"error,omitempty"`
@@ -68,9 +70,10 @@ type Manager struct {
 
 	apply chan *config.Config
 
-	mu      sync.Mutex
-	known   map[string]*Status  // последний обход каталога и конфига
-	running map[string]*running // запущенные
+	mu       sync.Mutex
+	known    map[string]*Status  // последний обход каталога и конфига
+	running  map[string]*running // запущенные
+	journals map[string]*journal // лог каждого плагина, переживает перезапуск
 }
 
 type running struct {
@@ -90,14 +93,80 @@ type fileStamp struct {
 
 func NewManager(dir string, host Host, logger *log.Logger) *Manager {
 	return &Manager{
-		Dir:     dir,
-		Host:    host,
-		Logger:  logger,
-		Cache:   wazero.NewCompilationCache(),
-		apply:   make(chan *config.Config, 1),
-		known:   map[string]*Status{},
-		running: map[string]*running{},
+		Dir:      dir,
+		Host:     host,
+		Logger:   logger,
+		Cache:    wazero.NewCompilationCache(),
+		apply:    make(chan *config.Config, 1),
+		known:    map[string]*Status{},
+		running:  map[string]*running{},
+		journals: map[string]*journal{},
 	}
+}
+
+// ErrNotRunning — вызов плагина, который не запущен.
+var ErrNotRunning = errors.New("plugin is not running")
+
+// ErrNoUI — у плагина нет своей страницы.
+var ErrNoUI = errors.New("plugin has no UI")
+
+// UIFile — страница плагина в пакете: один самодостаточный HTML, стили и
+// скрипты внутри. Панель показывает его в изолированном iframe.
+const UIFile = "ui/index.html"
+
+// Call передаёт плагину вызов с его страницы в панели и ждёт ответа.
+func (m *Manager) Call(ctx context.Context, name, method string, params json.RawMessage) (json.RawMessage, error) {
+	m.mu.Lock()
+	r, ok := m.running[name]
+	m.mu.Unlock()
+	if !ok {
+		return nil, ErrNotRunning
+	}
+	call := &uiCall{method: method, params: params, reply: make(chan uiReply, 1)}
+	select {
+	case r.inst.calls <- call:
+	case <-r.done:
+		return nil, ErrNotRunning
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case reply := <-call.reply:
+		return reply.result, reply.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// UI отдаёт страницу плагина.
+func (m *Manager) UI(name string) ([]byte, error) {
+	m.mu.Lock()
+	st, ok := m.known[name]
+	m.mu.Unlock()
+	if !ok || !st.HasUI {
+		return nil, ErrNoUI
+	}
+	return os.ReadFile(filepath.Join(m.Dir, name, filepath.FromSlash(UIFile)))
+}
+
+// Log — последние строки лога плагина, старые первыми.
+func (m *Manager) Log(name string) []LogLine {
+	m.mu.Lock()
+	j := m.journals[name]
+	m.mu.Unlock()
+	if j == nil {
+		return nil
+	}
+	return j.snapshot()
+}
+
+func (m *Manager) journalFor(name string) *journal {
+	j := m.journals[name]
+	if j == nil {
+		j = &journal{}
+		m.journals[name] = j
+	}
+	return j
 }
 
 // Apply сообщает о новом конфиге. Не блокируется: конфиг применяется из
@@ -214,6 +283,9 @@ func (m *Manager) reconcile(ctx context.Context, cfg *config.Config) {
 		st.Version, st.Title, st.Description = mf.Version, mf.Title, mf.Description
 		st.Permissions, st.HTTPHosts, st.SettingsSchema = mf.Permissions, mf.HTTPHosts, mf.SettingsSchema
 		st.Missing = mf.Missing(entry.Granted)
+		if info, err := os.Stat(filepath.Join(m.Dir, name, filepath.FromSlash(UIFile))); err == nil && !info.IsDir() {
+			st.HasUI = true
+		}
 		switch {
 		case !st.Enabled:
 		case len(st.Missing) > 0:
@@ -253,7 +325,7 @@ func (m *Manager) reconcile(ctx context.Context, cfg *config.Config) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for name, w := range want {
-		w.inst = newInstance(w.manifest, w.entry, &m.Host, m.Logger)
+		w.inst = newInstance(w.manifest, w.entry, &m.Host, m.Logger, m.journalFor(name))
 		w.inst.cache = m.Cache
 		runCtx, cancel := context.WithCancel(ctx)
 		w.cancel, w.done = cancel, make(chan struct{})

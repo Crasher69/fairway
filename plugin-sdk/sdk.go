@@ -42,49 +42,60 @@ type message struct {
 	Type     string          `json:"type"`
 	Settings json.RawMessage `json:"settings"`
 	Event    *Event          `json:"event"`
+	Method   string          `json:"method"`
+	Params   json.RawMessage `json:"params"`
 }
 
 type reply struct {
-	Error string `json:"error,omitempty"`
+	Result any    `json:"result,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 //go:wasmexport fw_handle
 func fwHandle(ptr, size uint32) uint64 {
-	err := handle(inbuf[:size])
-	var r reply
+	result, err := handle(inbuf[:size])
+	r := reply{Result: result}
 	if err != nil {
-		r.Error = err.Error()
+		r = reply{Error: err.Error()}
 	}
-	outbuf, _ = json.Marshal(r)
+	var marshalErr error
+	if outbuf, marshalErr = json.Marshal(r); marshalErr != nil {
+		outbuf, _ = json.Marshal(reply{Error: "result: " + marshalErr.Error()})
+	}
 	return uint64(pointer(outbuf))<<32 | uint64(len(outbuf))
 }
 
-func handle(data []byte) (err error) {
+func handle(data []byte) (result any, err error) {
 	// Паника в обработчике — ошибка вызова, а не падение плагина.
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("panic: %v", r)
+			result, err = nil, fmt.Errorf("panic: %v", r)
 		}
 	}()
 	var msg message
 	if err := json.Unmarshal(data, &msg); err != nil {
-		return err
+		return nil, err
 	}
 	switch msg.Type {
 	case "init":
 		if plugin.Init != nil {
-			return plugin.Init(msg.Settings)
+			return nil, plugin.Init(msg.Settings)
 		}
 	case "tick":
 		if plugin.Tick != nil {
-			return plugin.Tick()
+			return nil, plugin.Tick()
 		}
 	case "event":
 		if plugin.Event != nil && msg.Event != nil {
-			return plugin.Event(*msg.Event)
+			return nil, plugin.Event(*msg.Event)
 		}
+	case "call":
+		if plugin.Call == nil {
+			return nil, fmt.Errorf("plugin does not accept calls")
+		}
+		return plugin.Call(msg.Method, msg.Params)
 	}
-	return nil
+	return nil, nil
 }
 
 // Call вызывает метод хоста. Обычно хватает обёрток ниже.

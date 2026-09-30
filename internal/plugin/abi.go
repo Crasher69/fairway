@@ -24,8 +24,10 @@
 // компиляторы в WASM.
 //
 // Сообщения хоста плагину (fw_handle): {"type":"init","settings":{...}},
-// {"type":"tick"}, {"type":"event","event":{...}}. Ответ плагина —
-// {"error":"..."} или {}.
+// {"type":"tick"}, {"type":"event","event":{...}} и
+// {"type":"call","method":"...","params":{...}} — вызов со страницы
+// плагина в панели. Ответ плагина — {"error":"..."} или {}, на call —
+// ещё и {"result":...}.
 //
 // Вызовы плагина хосту (call): {"method":"...","params":{...}}, ответ —
 // {"result":...} или {"error":"..."}. Методы — в host.go.
@@ -53,16 +55,20 @@ const (
 	messageInit  = "init"
 	messageTick  = "tick"
 	messageEvent = "event"
+	messageCall  = "call"
 )
 
 type guestMessage struct {
 	Type     string          `json:"type"`
 	Settings json.RawMessage `json:"settings,omitempty"`
 	Event    *events.Event   `json:"event,omitempty"`
+	Method   string          `json:"method,omitempty"`
+	Params   json.RawMessage `json:"params,omitempty"`
 }
 
 type guestReply struct {
-	Error string `json:"error,omitempty"`
+	Result json.RawMessage `json:"result,omitempty"`
+	Error  string          `json:"error,omitempty"`
 }
 
 type hostRequest struct {

@@ -1,5 +1,6 @@
-// hello — минимальный плагин fairway: здоровается и раз в интервал пишет
-// в лог, сколько прокси в конфиге.
+// hello — минимальный плагин fairway: здоровается, раз в интервал пишет
+// в лог, сколько прокси в конфиге, и показывает то же на своей странице в
+// панели (ui/index.html).
 //
 // Сборка:
 //
@@ -15,6 +16,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	fairway "github.com/Crasher69/fairway/plugin-sdk"
@@ -41,14 +43,35 @@ func init() {
 			return fairway.Every(every)
 		},
 		Tick: func() error {
-			cfg, err := fairway.GetConfig()
+			c, err := count()
 			if err != nil {
 				return err
 			}
-			fairway.Logf("proxies: %d, lists: %d", len(cfg.Proxies), len(cfg.Lists))
+			fairway.Logf("proxies: %d, lists: %d", c.Proxies, c.Lists)
 			return nil
 		},
+		// Вызовы со страницы плагина: window.fairway.call("counts").
+		Call: func(method string, params json.RawMessage) (any, error) {
+			if method != "counts" {
+				return nil, fmt.Errorf("unknown method %q", method)
+			}
+			return count()
+		},
 	})
+}
+
+type counts struct {
+	Proxies int `json:"proxies"`
+	Lists   int `json:"lists"`
+	Domains int `json:"domains"`
+}
+
+func count() (counts, error) {
+	cfg, err := fairway.GetConfig()
+	if err != nil {
+		return counts{}, err
+	}
+	return counts{Proxies: len(cfg.Proxies), Lists: len(cfg.Lists), Domains: len(cfg.Domains)}, nil
 }
 
 // main в режиме reactor не вызывается, но пакет main без него не собрать.
