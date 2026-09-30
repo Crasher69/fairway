@@ -11,13 +11,15 @@ import (
 
 func sample(domain, proxy string) forward.Sample {
 	return forward.Sample{
-		Domain:   domain,
-		Upstream: proxy,
-		Connect:  10 * time.Millisecond,
-		TTFB:     20 * time.Millisecond,
-		Duration: time.Second,
-		Bytes:    100_000,
-		Status:   200,
+		Domain:        domain,
+		Upstream:      proxy,
+		Connect:       10 * time.Millisecond,
+		TTFB:          20 * time.Millisecond,
+		Duration:      time.Second,
+		Bytes:         100_000,
+		Transfer:      970 * time.Millisecond,
+		TransferBytes: 100_000,
+		Status:        200,
 	}
 }
 

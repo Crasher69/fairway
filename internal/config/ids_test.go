@@ -23,6 +23,9 @@ const legacyConfig = `{
 
 var uuidV4 = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
+// uuidAny — UUID версии 4 (выдан случайно) или 5 (выведен из имени).
+var uuidAny = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[45][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
 func TestNewIDIsUUIDv4(t *testing.T) {
 	seen := map[string]bool{}
 	for range 100 {
@@ -69,7 +72,7 @@ func TestLegacyNameBindingsMigrateToIDs(t *testing.T) {
 		t.Error("конфиг без id не помечен как дополненный")
 	}
 	for _, p := range cfg.Proxies {
-		if !uuidV4.MatchString(p.ID) {
+		if !uuidAny.MatchString(p.ID) {
 			t.Errorf("прокси %s: id %q", p.Name, p.ID)
 		}
 	}
@@ -187,6 +190,29 @@ func TestProxyIDErrors(t *testing.T) {
 		if _, err := Parse([]byte(raw)); err == nil {
 			t.Errorf("%s: конфиг принят", name)
 		}
+	}
+}
+
+// TestMissingIDIsStable — id, выданный прокси без id, одинаков при каждом
+// чтении. Файл только для чтения не удаётся дополнить, и случайный id
+// менялся бы на каждом старте, а вместе с ним стирался бы рейтинг.
+func TestMissingIDIsStable(t *testing.T) {
+	first, err := Parse([]byte(legacyConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Parse([]byte(legacyConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range first.Proxies {
+		if first.Proxies[i].ID != second.Proxies[i].ID {
+			t.Errorf("прокси %s: id %q, при повторном чтении %q",
+				first.Proxies[i].Name, first.Proxies[i].ID, second.Proxies[i].ID)
+		}
+	}
+	if first.Proxies[0].ID == first.Proxies[1].ID {
+		t.Error("у разных имён одинаковый id")
 	}
 }
 

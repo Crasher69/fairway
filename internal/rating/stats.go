@@ -2,7 +2,6 @@ package rating
 
 import (
 	"math"
-	"strconv"
 	"sync"
 	"time"
 
@@ -64,9 +63,17 @@ type Stats struct {
 
 	consecutiveFails  int
 	consecutiveBlocks int
-	bannedUntil       time.Time
-	banReason         string
-	lastUsed          time.Time
+	// strikes — сколько банов подряд без единого успешного ответа между
+	// ними. От него растёт срок следующего бана: 5 → 10 → 20 минут…
+	strikes int
+	// probation — бан кончился, а успешного ответа с тех пор не было.
+	// Прокси получает по одному запросу за раз, и ошибка соединения банит
+	// его сразу, без серии из трёх: одна проба стоит одного запроса, а не
+	// трёх проваленных у клиентов.
+	probation   bool
+	bannedUntil time.Time
+	banReason   string
+	lastUsed    time.Time
 }
 
 // newStats заводит пустую пару. Время создания записывается в lastUsed:
@@ -91,27 +98,46 @@ type observation struct {
 	status     int
 	challenge  string // имя антибот-заслона, если вместо ответа пришла капча
 	failed     bool
-	reused     bool // соединение переиспользовано: connect не измерялся
+	cause      string // короткая причина неудачи (failureCause) — для строки бана
+	reused     bool   // соединение переиспользовано: connect не измерялся
 	at         time.Time
+}
+
+// banTerms — срок бана для домена: начальный и потолок, до которого он
+// растёт при банах подряд. Потолок меньше начального — срок не растёт.
+type banTerms struct {
+	base, max time.Duration
 }
 
 // add обновляет статистику и, если нужно, отправляет прокси в бан.
 // Возвращает причину бана, если он только что случился.
-func (s *Stats) add(o observation, banFor time.Duration) string {
+func (s *Stats) add(o observation, banFor banTerms) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.requests++
 	s.lastUsed = o.at
+	// Пока бан действует, доходят ответы запросов, ушедших ещё до него.
+	// В серии они не идут: иначе к концу бана серия уже была бы набрана,
+	// и первая же неудача после него банила бы снова.
+	banned := o.at.Before(s.bannedUntil)
 
 	if o.failed {
 		s.errors++
 		s.errorRate.Add(1)
+		if banned {
+			return ""
+		}
+		// Проба после бана провалилась — прокси по-прежнему мёртв для
+		// сайта, и ждать ещё двух неудач незачем.
+		if s.probation {
+			return s.banLocked(o.at, banFor, i18n.T("failed the check after a ban: ")+o.cause)
+		}
 		s.consecutiveFails++
 		// Соединение не установилось — по нему нельзя судить о скорости,
 		// поэтому connect/ttfb не трогаем, чтобы не портить среднее.
 		if s.consecutiveFails >= failsBeforeBan {
-			return s.banLocked(o.at, banFor, i18n.T("consecutive failures: ")+strconv.Itoa(s.consecutiveFails))
+			return s.banLocked(o.at, banFor, i18n.Sprintf("%d failures in a row: %s", s.consecutiveFails, o.cause))
 		}
 		return ""
 	}
@@ -141,6 +167,17 @@ func (s *Stats) add(o observation, banFor time.Duration) string {
 	reason := blockReason(o.status)
 	if reason == "" {
 		s.consecutiveBlocks = 0
+		// Успешный ответ вне бана: прокси жив для сайта, прошлые баны
+		// больше ничего не значат, и следующий, если случится, снова будет
+		// коротким. Ответ, вернувшийся во время бана, этого не доказывает:
+		// запрос ушёл ещё до него.
+		if !banned {
+			s.strikes = 0
+			s.probation = false
+		}
+		return ""
+	}
+	if banned {
 		return ""
 	}
 	s.consecutiveBlocks++
@@ -165,8 +202,8 @@ func blockReason(status int) string {
 	return ""
 }
 
-func (s *Stats) banLocked(now time.Time, d time.Duration, reason string) string {
-	if d <= 0 {
+func (s *Stats) banLocked(now time.Time, terms banTerms, reason string) string {
+	if terms.base <= 0 {
 		return ""
 	}
 	// Уже забанен — не продлеваем и не сообщаем повторно. Под нагрузкой в
@@ -176,9 +213,22 @@ func (s *Stats) banLocked(now time.Time, d time.Duration, reason string) string 
 	if now.Before(s.bannedUntil) {
 		return ""
 	}
-	s.bannedUntil = now.Add(d)
+	// Прошлые баны забываются, если с конца последнего прошло больше
+	// потолка, а успехов с тех пор не было просто потому, что не было и
+	// запросов: провалы многочасовой давности о прокси уже ничего не
+	// говорят.
+	if s.strikes > 0 && now.Sub(s.bannedUntil) >= max(terms.max, terms.base) {
+		s.strikes = 0
+	}
+	s.bannedUntil = now.Add(banLength(terms, s.strikes))
 	s.banReason = reason
 	s.bans++
+	s.strikes++
+	s.probation = true
+	// Бан начинается с чистого листа: после него прокси снова нужно три
+	// неудачи подряд, как и в первый раз, а не одна.
+	s.consecutiveFails = 0
+	s.consecutiveBlocks = 0
 	return reason
 }
 
@@ -195,7 +245,32 @@ func (s *Stats) unban(now time.Time) bool {
 	s.banReason = ""
 	s.consecutiveFails = 0
 	s.consecutiveBlocks = 0
+	// Человек снял бан, потому что знает, что прокси в порядке: копить
+	// прошлые баны и проверять его заново незачем.
+	s.strikes = 0
+	s.probation = false
 	return true
+}
+
+// banLength — срок очередного бана: начальный, удвоенный за каждый бан
+// подряд до этого, но не больше потолка.
+func banLength(terms banTerms, strikes int) time.Duration {
+	d := terms.base
+	for i := 0; i < strikes && d < terms.max; i++ {
+		d *= 2
+	}
+	if terms.max > terms.base && d > terms.max {
+		d = terms.max
+	}
+	return d
+}
+
+// OnProbation сообщает, что прокси вышел из бана и ещё не доказал, что
+// жив: ему положен один запрос за раз.
+func (s *Stats) OnProbation(now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.probation && !now.Before(s.bannedUntil)
 }
 
 // idleSince сообщает, когда пару трогали в последний раз.
@@ -267,7 +342,11 @@ type Snapshot struct {
 	Cost        float64   `json:"cost"`
 	BannedUntil time.Time `json:"banned_until,omitempty"`
 	BanReason   string    `json:"ban_reason,omitempty"`
-	LastUsed    time.Time `json:"last_used,omitempty"`
+	// Strikes — сколько банов подряд без успеха между ними.
+	Strikes int `json:"strikes,omitempty"`
+	// Probation — вышел из бана и ждёт пробного запроса.
+	Probation bool      `json:"probation,omitempty"`
+	LastUsed  time.Time `json:"last_used,omitempty"`
 }
 
 // Snapshot снимает состояние пары (домен, прокси).
@@ -286,6 +365,8 @@ func (s *Stats) Snapshot() Snapshot {
 		Cost:        s.costLocked(),
 		BannedUntil: s.bannedUntil,
 		BanReason:   s.banReason,
+		Strikes:     s.strikes,
+		Probation:   s.probation,
 		LastUsed:    s.lastUsed,
 	}
 }
@@ -317,9 +398,13 @@ func (s *Stats) restore(snap Snapshot, now time.Time) {
 	if s.lastUsed.IsZero() {
 		s.lastUsed = now
 	}
-	// Протухший бан не восстанавливаем: за время простоя всё могло измениться.
+	// Срок бана восстанавливается и истёкший: по нему считается, давно ли
+	// кончился последний бан, и забываются ли прошлые. Бана он не даёт —
+	// Banned сравнивает с текущим временем. Причина нужна только живому.
+	s.bannedUntil = snap.BannedUntil
 	if now.Before(snap.BannedUntil) {
-		s.bannedUntil = snap.BannedUntil
 		s.banReason = snap.BanReason
 	}
+	s.strikes = snap.Strikes
+	s.probation = snap.Probation
 }

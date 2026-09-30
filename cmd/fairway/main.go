@@ -117,6 +117,12 @@ func main() {
 		}
 		return 0
 	}
+	ratings.MaxBanDuration = func(domain string) time.Duration {
+		if rule, ok := pool.Rule(domain); ok {
+			return rule.MaxBanDuration
+		}
+		return 0
+	}
 	ratings.OnBan = func(domain, proxy, reason string, until time.Time) {
 		bus.Publish(events.ProxyBanned, events.ProxyBannedData{
 			Domain: domain, Proxy: proxy, Reason: reason, Until: until,

@@ -17,8 +17,10 @@ type Rule struct {
 	MaxConnsPerProxy   int
 	MITM               bool
 	BanDuration        time.Duration
-	ConnectTimeout     time.Duration
-	ResponseTimeout    time.Duration
+	// MaxBanDuration — потолок, до которого растёт срок бана подряд.
+	MaxBanDuration  time.Duration
+	ConnectTimeout  time.Duration
+	ResponseTimeout time.Duration
 }
 
 // ruleSet — скомпилированные правила: точные имена, wildcard-суффиксы и
@@ -48,6 +50,7 @@ func compileRules(cfg *config.Config) *ruleSet {
 			MaxConnsPerProxy:   inheritLimit(dom.MaxConnsPerProxy, d.MaxConnsPerProxy),
 			MITM:               d.MITM,
 			BanDuration:        dom.BanDuration.Duration(),
+			MaxBanDuration:     inheritDuration(dom.MaxBanDuration, d.MaxBanDuration),
 			ConnectTimeout:     inheritDuration(dom.ConnectTimeout, d.ConnectTimeout),
 			ResponseTimeout:    inheritDuration(dom.ResponseTimeout, d.ResponseTimeout),
 		}
@@ -58,14 +61,17 @@ func compileRules(cfg *config.Config) *ruleSet {
 			r.BanDuration = d.BanDuration.Duration()
 		}
 
+		// Шаблон приводится к тому же виду, что и домен в match: иначе
+		// «*.Example.com» или «example.com.» не совпали бы ни с чем.
+		pattern := strings.ToLower(strings.TrimSuffix(dom.Pattern, "."))
 		switch {
-		case dom.Pattern == "*":
+		case pattern == "*":
 			catch := r
 			rs.catchAll = &catch
-		case strings.HasPrefix(dom.Pattern, "*."):
-			rs.wildcards = append(rs.wildcards, wildcardRule{suffix: dom.Pattern[1:], rule: r})
+		case strings.HasPrefix(pattern, "*."):
+			rs.wildcards = append(rs.wildcards, wildcardRule{suffix: pattern[1:], rule: r})
 		default:
-			rs.exact[strings.ToLower(dom.Pattern)] = r
+			rs.exact[pattern] = r
 		}
 	}
 
@@ -88,6 +94,7 @@ func compileRules(cfg *config.Config) *ruleSet {
 			MaxConnsPerProxy:   normalizeLimit(d.MaxConnsPerProxy),
 			MITM:               d.MITM,
 			BanDuration:        d.BanDuration.Duration(),
+			MaxBanDuration:     d.MaxBanDuration.Duration(),
 			ConnectTimeout:     d.ConnectTimeout.Duration(),
 			ResponseTimeout:    d.ResponseTimeout.Duration(),
 		}

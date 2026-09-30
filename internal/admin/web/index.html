@@ -427,6 +427,9 @@
           <label class="field"><span data-t>Ban</span>
             <input name="ban_duration" placeholder="5m" size="8">
           </label>
+          <label class="field"><span data-t>Ban up to</span>
+            <input name="max_ban_duration" placeholder="1h" size="8">
+          </label>
           <label class="field"><span data-t>Connect timeout</span>
             <input name="connect_timeout" placeholder="15s" size="8">
           </label>
@@ -437,7 +440,7 @@
         <div class="form-actions">
           <button class="primary" data-t>Save rule</button>
           <button type="button" class="ghost" id="rule-form-cancel" hidden data-t>Cancel</button>
-          <span class="hint" data-t-html>Zero in a limit means “take from general settings”, −1 means “unlimited”. Ban and timeouts are Go durations: <code>30s</code>, <code>5m</code>, <code>1h30m</code>; empty means “as in general settings”.</span>
+          <span class="hint" data-t-html>Zero in a limit means “take from general settings”, −1 means “unlimited”. Ban and timeouts are Go durations: <code>30s</code>, <code>5m</code>, <code>1h30m</code>; empty means “as in general settings”. Each ban in a row with no successful reply in between is twice as long, up to “Ban up to”.</span>
         </div>
       </form>
     </div>
@@ -466,6 +469,9 @@
           </label>
           <label class="field"><span data-t>Ban</span>
             <input name="ban_duration" placeholder="5m" size="8">
+          </label>
+          <label class="field"><span data-t>Ban up to</span>
+            <input name="max_ban_duration" placeholder="1h" size="8">
           </label>
           <label class="field"><span data-t>Connect timeout</span>
             <input name="connect_timeout" placeholder="15s" size="8">

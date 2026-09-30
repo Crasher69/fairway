@@ -42,6 +42,9 @@ type Registry struct {
 	// BanDuration отдаёт срок бана для домена (обычно из правила конфига).
 	// Если nil или возвращает 0, баны не выставляются.
 	BanDuration func(domain string) time.Duration
+	// MaxBanDuration отдаёт потолок, до которого растёт срок бана подряд.
+	// nil или меньше BanDuration — срок не растёт.
+	MaxBanDuration func(domain string) time.Duration
 	// OnBan вызывается, когда прокси выключается для домена; proxy — его
 	// id. Может быть nil.
 	OnBan func(domain, proxy, reason string, until time.Time)
@@ -239,19 +242,27 @@ func (r *Registry) Observe(sample forward.Sample) {
 	now := r.now()
 	stats := r.Stats(sample.Domain, key)
 
-	var banFor time.Duration
+	var banFor banTerms
 	if r.BanDuration != nil {
-		banFor = r.BanDuration(sample.Domain)
+		banFor.base = r.BanDuration(sample.Domain)
+	}
+	if r.MaxBanDuration != nil {
+		banFor.max = r.MaxBanDuration(sample.Domain)
+	}
+	var cause string
+	if sample.Err != nil {
+		cause = failureCause(sample.Err)
 	}
 
 	reason := stats.add(observation{
 		connect:    sample.Connect,
 		ttfb:       sample.TTFB,
-		bytes:      sample.Bytes,
+		bytes:      sample.TransferBytes,
 		throughput: sample.Throughput(),
 		status:     sample.Status,
 		challenge:  sample.Challenge,
 		failed:     sample.Err != nil,
+		cause:      cause,
 		reused:     sample.Reused,
 		at:         now,
 	}, banFor)
@@ -267,9 +278,11 @@ func (r *Registry) Observe(sample forward.Sample) {
 // Порядок такой:
 //  1. забаненные для домена исключаются; если забанены все, берётся тот,
 //     чей бан кончится раньше (см. ниже);
-//  2. непроверенные (замеров меньше minSamples), у которых на домене ничего
-//     не висит, идут первыми — иначе новый прокси никогда не наберёт
-//     статистику и останется невидимым;
+//  2. непроверенные (замеров меньше minSamples) и вышедшие из бана, у
+//     которых на домене ничего не висит, идут первыми — иначе новый прокси
+//     никогда не наберёт статистику и останется невидимым, а ожил ли
+//     забаненный, никто не узнает. Вышедший из бана, у которого запрос
+//     уже висит, не получает ничего: ему положен один запрос за раз;
 //  3. с вероятностью Epsilon — случайный из оставшихся (разведка);
 //  4. иначе — взвешенная лотерея с весом (1/цена)^Sharpness. Непроверенные
 //     в ней не участвуют: цены у них ещё нет.
@@ -303,6 +316,9 @@ func (r *Registry) Select(domain string, candidates []proxypool.Candidate) *prox
 	var (
 		fallback     *proxypool.Proxy
 		fallbackFree time.Time
+		// busy — вышедший из бана, у которого проба ещё висит. Лучше
+		// него, чем забаненный, но только если больше некого.
+		busy *proxypool.Proxy
 	)
 	for _, c := range candidates {
 		stats := r.Stats(domain, c.Proxy.ID)
@@ -312,13 +328,21 @@ func (r *Registry) Select(domain string, candidates []proxypool.Candidate) *prox
 			}
 			continue
 		}
+		probation := stats.OnProbation(now)
+		if probation && c.InFlight > 0 {
+			busy = c.Proxy
+			continue
+		}
 		alive = append(alive, c)
-		if stats.Samples() < minSamples && c.InFlight == 0 {
+		if (probation || stats.Samples() < minSamples) && c.InFlight == 0 {
 			fresh = append(fresh, c.Proxy)
 		}
 	}
-	// Все забанены — берём того, кто выйдет из бана раньше всех.
+	// Живых нет — берём того, кто выйдет из бана раньше всех.
 	if len(alive) == 0 {
+		if busy != nil {
+			return busy
+		}
 		return fallback
 	}
 	if len(fresh) > 0 {

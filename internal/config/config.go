@@ -4,6 +4,7 @@ package config
 
 import (
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -146,6 +147,12 @@ type Defaults struct {
 	MaxConnsPerProxy   int      `json:"max_conns_per_proxy"`
 	MITM               bool     `json:"mitm"`
 	BanDuration        Duration `json:"ban_duration"`
+	// MaxBanDuration — потолок, до которого растёт срок бана. Каждый бан
+	// подряд без единого успешного ответа между ними вдвое дольше
+	// предыдущего: прокси, мёртвый для сайта надолго, не должен каждые
+	// ban_duration проваливать новые запросы. Не больше ban_duration —
+	// срок не растёт.
+	MaxBanDuration Duration `json:"max_ban_duration"`
 	// ConnectTimeout — сколько ждать соединения с сайтом через прокси.
 	// Не уложился — прокси для этого домена считается неудачным, и запрос
 	// уходит через другой.
@@ -159,6 +166,9 @@ type Defaults struct {
 const (
 	DefaultConnectTimeout  = 15 * time.Second
 	DefaultResponseTimeout = 60 * time.Second
+	// DefaultMaxBanDuration — потолок растущего бана: 5 → 10 → 20 → 40 → 60
+	// минут при ban_duration 5m.
+	DefaultMaxBanDuration = time.Hour
 )
 
 // Proxy — один апстрим-прокси.
@@ -252,6 +262,27 @@ func NewID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
+// idNamespace — пространство имён для id, выведенных из имени прокси
+// (UUID версии 5): случайное, но постоянное, чтобы одно и то же имя давало
+// один и тот же id в любой установке fairway.
+var idNamespace = [16]byte{0x6b, 0x2f, 0x0e, 0x91, 0x3c, 0x57, 0x4a, 0xd8, 0x9e, 0x14, 0x27, 0xb0, 0x5d, 0x86, 0xc3, 0x1f}
+
+// IDForName выводит id из имени прокси (UUID версии 5). Нужен там, где id
+// в файле нет: конфиг из времён до id, прокси, дописанный руками. Случайный
+// id был бы новым при каждом чтении, если файл не удаётся перезаписать
+// (только для чтения, как в Docker с config.json:ro), и рейтинг, сохранённый
+// по прошлому id, стирался бы на каждом старте и каждой перезагрузке.
+func IDForName(name string) string {
+	h := sha1.New()
+	h.Write(idNamespace[:])
+	h.Write([]byte(name))
+	var b [16]byte
+	copy(b[:], h.Sum(nil))
+	b[6] = b[6]&0x0f | 0x50
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
 // ProxyByID ищет прокси по id.
 func (c *Config) ProxyByID(id string) (Proxy, bool) {
 	for _, p := range c.Proxies {
@@ -285,6 +316,8 @@ type Domain struct {
 	// Ноль не пишем в файл: он значит «наследовать», а явный "0s" читался бы
 	// как «баны выключены».
 	BanDuration Duration `json:"ban_duration,omitempty"`
+	// MaxBanDuration — потолок растущего бана, как в defaults; пусто — оттуда.
+	MaxBanDuration Duration `json:"max_ban_duration,omitempty"`
 	// ConnectTimeout и ResponseTimeout — как в defaults; пусто — оттуда.
 	ConnectTimeout  Duration `json:"connect_timeout,omitempty"`
 	ResponseTimeout Duration `json:"response_timeout,omitempty"`
@@ -380,7 +413,7 @@ func (c *Config) Validate() error {
 			return i18n.Errorf("proxies[%d]: name %q is already taken", i, p.Name)
 		}
 		if p.ID == "" {
-			p.ID = NewID()
+			p.ID = IDForName(p.Name)
 			c.migrated = true
 		}
 		if proxyIDs[p.ID] {
@@ -447,6 +480,8 @@ func (c *Config) Validate() error {
 			return i18n.Errorf("domains[%d] (%s): a limit below -1 makes no sense (0 — inherit, -1 — unlimited)", i, d.Pattern)
 		case d.ConnectTimeout < 0 || d.ResponseTimeout < 0:
 			return i18n.Errorf("domains[%d] (%s): a timeout cannot be negative", i, d.Pattern)
+		case d.BanDuration < 0 || d.MaxBanDuration < 0:
+			return i18n.Errorf("domains[%d] (%s): a ban duration cannot be negative", i, d.Pattern)
 		}
 		if err := validatePattern(d.Pattern); err != nil {
 			return fmt.Errorf("domains[%d]: %w", i, err)
@@ -465,6 +500,9 @@ func (c *Config) Validate() error {
 	if c.Defaults.ConnectTimeout < 0 || c.Defaults.ResponseTimeout < 0 {
 		return i18n.Errorf("defaults: a timeout cannot be negative")
 	}
+	if c.Defaults.BanDuration < 0 || c.Defaults.MaxBanDuration < 0 {
+		return i18n.Errorf("defaults: a ban duration cannot be negative")
+	}
 	// Пустые таймауты заполняются, и файл переписывается: значения должны
 	// быть видны в конфиге, чтобы было ясно, что менять.
 	if c.Defaults.ConnectTimeout == 0 {
@@ -473,6 +511,10 @@ func (c *Config) Validate() error {
 	}
 	if c.Defaults.ResponseTimeout == 0 {
 		c.Defaults.ResponseTimeout = Duration(DefaultResponseTimeout)
+		c.migrated = true
+	}
+	if c.Defaults.MaxBanDuration == 0 {
+		c.Defaults.MaxBanDuration = Duration(DefaultMaxBanDuration)
 		c.migrated = true
 	}
 	return nil
@@ -497,6 +539,7 @@ func Example() *Config {
 			AllowDirect:      true,
 			MaxConnsPerProxy: 32,
 			BanDuration:      Duration(5 * time.Minute),
+			MaxBanDuration:   Duration(DefaultMaxBanDuration),
 			ConnectTimeout:   Duration(DefaultConnectTimeout),
 			ResponseTimeout:  Duration(DefaultResponseTimeout),
 		},

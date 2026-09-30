@@ -62,6 +62,12 @@ func TestDetect(t *testing.T) {
 			html("Forbidden", `<script src="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1"></script>`), "cloudflare"},
 		{"datadome dd.js на 403", 403, htmlHeader,
 			html("Доступ", `<script src="https://js.datadome.co/dd.js"></script>`), "datadome"},
+		// Обычные формы с виджетом и словом «проверка» или «подтвердите» в
+		// заголовке: раньше это банило прокси.
+		{"подтверждение email с виджетом", 200, htmlHeader,
+			html("Подтвердите email", `<div class="g-recaptcha"></div>`), ""},
+		{"проверка статуса заказа с виджетом", 200, htmlHeader,
+			html("Проверка статуса заказа", `<div class="g-recaptcha"></div>`), ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -69,7 +75,35 @@ func TestDetect(t *testing.T) {
 			if header == nil {
 				header = http.Header{}
 			}
-			if got := Detect(c.status, header, c.body); got != c.want {
+			if got := Detect(c.status, header, c.body, true); got != c.want {
+				t.Errorf("Detect = %q, ожидалось %q", got, c.want)
+			}
+		})
+	}
+}
+
+// Крупная страница, от которой видно только начало, — содержимое, а не
+// заслон: страницы проверки маленькие. Статья о Cloudflare или
+// обсуждение на GitHub упоминают маркеры и банили бы прокси для сайта.
+func TestDetectPartialPage(t *testing.T) {
+	htmlHeader := http.Header{"Content-Type": {"text/html; charset=utf-8"}}
+	cases := []struct {
+		name   string
+		status int
+		body   []byte
+		want   string
+	}{
+		{"статья про _cf_chl_opt", 200,
+			html("Как обойти Cloudflare", "<pre>window._cf_chl_opt = {...}</pre>"), ""},
+		{"говорящий заголовок и виджет", 200,
+			html("Captcha solving API", `<div class="g-recaptcha"></div>`), ""},
+		// Отказ остаётся отказом и на крупной странице.
+		{"403 с маркером", 403,
+			html("Forbidden", `<script>window._cf_chl_opt={}</script>`), "cloudflare"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := Detect(c.status, htmlHeader, c.body, false); got != c.want {
 				t.Errorf("Detect = %q, ожидалось %q", got, c.want)
 			}
 		})

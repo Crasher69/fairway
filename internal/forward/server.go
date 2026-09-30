@@ -116,7 +116,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if _, _, err := net.SplitHostPort(target); err != nil {
 		target = net.JoinHostPort(target, "443")
 	}
-	domain := hostOnly(target)
+	domain := domainOf(target)
 	started := time.Now()
 
 	route, err := s.Pick(domain, nil)
@@ -272,11 +272,13 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		upConn.Close()
 		clientConn.Close()
 	})
+	transfer := transferMeter{last: time.Now()}
 	if _, err := clientConn.Write(buf[:n]); err == nil {
 		for {
 			n, err := upConn.Read(buf)
 			if n > 0 {
 				total += int64(n)
+				transfer.add(n)
 				activity.Store(time.Now().UnixNano())
 				if _, werr := clientConn.Write(buf[:n]); werr != nil {
 					break
@@ -292,6 +294,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	stopIdle()
 
 	sample.Bytes = total
+	sample.Transfer, sample.TransferBytes = transfer.active, transfer.bytes
 	sample.Duration = time.Since(started)
 	s.observe(sample)
 }
@@ -335,7 +338,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, i18n.T("this is a proxy server: an absolute-form request is expected"), http.StatusBadRequest)
 		return
 	}
-	domain := hostOnly(r.Host)
+	domain := domainOf(r.Host)
 	started := time.Now()
 
 	if s.Hooks != nil {
@@ -353,18 +356,23 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() { route.release() }()
 
 	// Запрос без тела повторяется через другой прокси, если через этот не
-	// пришло ответа: заголовки повторить нетрудно, а ответа не было, так
-	// что двойного выполнения GET не случится. Так же поступает
-	// http.Transport при обрыве keep-alive. С телом — нет: оно уже могло
-	// уйти по частям, и собрать его заново не из чего.
+	// пришло ответа и выполнить его ещё раз безопасно: он идемпотентный
+	// или вовсе не ушёл к цели (см. retry.go). POST без тела, ушедший к
+	// медленной цели, не повторяется — она могла его уже выполнить. С телом
+	// не повторяется ничего: оно уже могло уйти по частям, и собрать его
+	// заново не из чего.
 	var (
 		avoid  []string
 		sample Sample
 		resp   *http.Response
 	)
+	var (
+		firstByte time.Time
+		sent      bool
+	)
 	for {
 		sample = route.sample(domain)
-		resp, err = s.forwardHTTP(route, r, &sample)
+		resp, firstByte, sent, err = s.forwardHTTP(route, r, &sample)
 		if err == nil {
 			break
 		}
@@ -377,14 +385,14 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.observe(sample)
-		if r.Body != http.NoBody {
-			http.Error(w, i18n.T("upstream unavailable: ")+err.Error(), http.StatusBadGateway)
+		if r.Body != http.NoBody || (sent && !idempotent(r)) {
+			http.Error(w, i18n.T("upstream unavailable: ")+err.Error(), gatewayStatus(err))
 			return
 		}
 		var next *Route
 		next, err = s.nextRoute(domain, route, &avoid)
 		if err != nil {
-			http.Error(w, i18n.T("upstream unavailable: ")+sample.Err.Error(), http.StatusBadGateway)
+			http.Error(w, i18n.T("upstream unavailable: ")+sample.Err.Error(), gatewayStatus(sample.Err))
 			return
 		}
 		route = next
@@ -412,6 +420,9 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		sample.ClientGone = out.err != nil || r.Context().Err() != nil
 	}
 	sample.Bytes = counted.n
+	if !firstByte.IsZero() {
+		sample.Transfer, sample.TransferBytes = time.Since(firstByte), counted.n
+	}
 	sample.Duration = time.Since(started)
 	s.observe(sample)
 }
@@ -429,11 +440,31 @@ func writeHookResponse(w http.ResponseWriter, resp *http.Response) {
 // forwardHTTP отправляет запрос через пул keep-alive соединений апстрима и
 // снимает замер трассировкой: она одна знает, было ли соединение
 // установлено заново или взято из пула, и когда пришёл первый байт ответа.
-func (s *Server) forwardHTTP(route *Route, r *http.Request, sample *Sample) (*http.Response, error) {
+// Возвращает и момент первого байта: от него считается скорость отдачи, —
+// и sent: запрос ушёл к цели целиком, и при ошибке она могла его уже
+// выполнить.
+func (s *Server) forwardHTTP(route *Route, r *http.Request, sample *Sample) (*http.Response, time.Time, bool, error) {
+	// Таймаут ответа у каждого домена свой, а пул соединений один на
+	// апстрим, поэтому ResponseHeaderTimeout транспорта не годится: ждём
+	// заголовков сами и отменяем запрос, если их нет. Таймаут подключения
+	// транспорт берёт из контекста.
+	wait := s.responseTimeout(route)
+	ctx, cancel := context.WithCancel(withConnectTimeout(r.Context(), s.connectTimeout(route)))
+	guard := newWatchdog(wait, cancel)
+
 	var (
 		dialStart, gotConn, firstByte time.Time
 		reused                        bool
+		// wrote — запрос ушёл целиком, lastSent — когда ушла последняя его
+		// часть. Пишутся из пишущей горутины транспорта и могут прийти уже
+		// после ответа: цель ответила, не дочитав тело, или просто в тот
+		// же миг.
+		wrote, lastSent atomic.Int64
 	)
+	progress := func() {
+		lastSent.Store(time.Now().UnixNano())
+		guard.kick()
+	}
 	trace := &httptrace.ClientTrace{
 		ConnectStart: func(_, _ string) {
 			if dialStart.IsZero() {
@@ -444,26 +475,31 @@ func (s *Server) forwardHTTP(route *Route, r *http.Request, sample *Sample) (*ht
 			gotConn = time.Now()
 			reused = info.Reused
 		},
+		// Таймаут ответа отсчитывается от конца отправки запроса: большая
+		// загрузка по медленному каналу — не молчание цели.
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			if info.Err == nil {
+				wrote.Store(time.Now().UnixNano())
+			}
+			progress()
+		},
 		GotFirstResponseByte: func() { firstByte = time.Now() },
 	}
-	// Таймаут ответа у каждого домена свой, а пул соединений один на
-	// апстрим, поэтому ResponseHeaderTimeout транспорта не годится: ждём
-	// заголовков сами и отменяем запрос, если их нет. Таймаут подключения
-	// транспорт берёт из контекста.
-	wait := s.responseTimeout(route)
-	ctx, cancel := context.WithCancel(withConnectTimeout(r.Context(), s.connectTimeout(route)))
-	timer := time.AfterFunc(wait, cancel)
 	outReq := r.Clone(httptrace.WithClientTrace(ctx, trace))
 	outReq.RequestURI = ""
 	removeHopByHop(outReq.Header)
+	if outReq.Body != nil && outReq.Body != http.NoBody {
+		// Пока тело уходит, запрос жив: таймер ждёт паузы, а не конца.
+		outReq.Body = &kickReader{ReadCloser: outReq.Body, kick: progress}
+	}
 
 	resp, err := route.Upstream.Transport(s.dialTimeout()).RoundTrip(outReq)
-	if !timer.Stop() && r.Context().Err() == nil {
+	if guard.stop() && r.Context().Err() == nil {
 		// Сработал таймер, а не ушёл клиент: ответа не дождались.
 		if err == nil {
 			resp.Body.Close()
 		}
-		err = i18n.Errorf("no reply from target within %s", wait)
+		err = &replyTimeout{wait: wait}
 	}
 	if err != nil {
 		cancel()
@@ -479,14 +515,22 @@ func (s *Server) forwardHTTP(route *Route, r *http.Request, sample *Sample) (*ht
 		}
 		sample.Connect = end.Sub(dialStart)
 	}
+	sent := wrote.Load() != 0
 	if err != nil {
 		sample.Err = err
-		return nil, err
+		return nil, time.Time{}, sent, err
 	}
 	if !firstByte.IsZero() && !gotConn.IsZero() {
-		sample.TTFB = firstByte.Sub(gotConn)
+		// TTFB — от конца отправки: время загрузки тела запроса к
+		// скорости ответа прокси отношения не имеет. Цель, ответившая
+		// раньше, чем дочитала тело, не ждала ничего — TTFB ноль.
+		from := gotConn
+		if at := lastSent.Load(); at != 0 {
+			from = time.Unix(0, at)
+		}
+		sample.TTFB = max(firstByte.Sub(from), 0)
 	}
-	return resp, nil
+	return resp, firstByte, sent, nil
 }
 
 // connectTimeout — таймаут подключения к цели через этот маршрут.
@@ -555,6 +599,14 @@ func ProxyCredentials(r *http.Request) (login, password string, ok bool) {
 		return "", "", false
 	}
 	return login, password, true
+}
+
+// domainOf — домен цели в том виде, в каком по нему копится рейтинг и
+// считаются лимиты: без порта, в нижнем регистре и без точки в конце.
+// Иначе Example.com, example.com и example.com. были бы тремя доменами
+// с тремя рейтингами и тремя рабочими наборами прокси.
+func domainOf(hostport string) string {
+	return strings.ToLower(strings.TrimSuffix(hostOnly(hostport), "."))
 }
 
 // hostOnly отрезает порт: "example.com:443" → "example.com".

@@ -64,6 +64,30 @@ func TestRuleMatchingPrecedence(t *testing.T) {
 	}
 }
 
+// TestRulePatternCaseAndDot — шаблон правила приводится к тому же виду,
+// что и домен: «*.Example.COM» раньше не совпадал ни с чем, и запрос
+// молча уходил по «*» или напрямую.
+func TestRulePatternCaseAndDot(t *testing.T) {
+	cfg := mustConfig(t, `{
+	  "proxies": [{"name":"p","url":"http://1.1.1.1:80"}],
+	  "lists": [{"name":"l1","proxies":["p"]},{"name":"l2","proxies":["p"]}],
+	  "domains": [
+	    {"pattern": "Shop.Example.com.", "list": "l1"},
+	    {"pattern": "*.Example.COM", "list": "l2"}
+	  ]
+	}`)
+	rs := compileRules(cfg)
+	for domain, want := range map[string]string{
+		"shop.example.com": "l1",
+		"api.example.com":  "l2",
+	} {
+		r, ok := rs.match(domain)
+		if !ok || r.List != want {
+			t.Errorf("%s -> %q (найдено %v), ожидался %s", domain, r.List, ok, want)
+		}
+	}
+}
+
 func TestRuleInheritsDefaults(t *testing.T) {
 	cfg := mustConfig(t, `{
 	  "defaults": {"max_conns_per_proxy": 16, "max_parallel_proxies": 3, "mitm": true, "ban_duration": "5m"},
@@ -441,5 +465,35 @@ func TestRuleTimeouts(t *testing.T) {
 	defer lease.Release()
 	if lease.Rule.ConnectTimeout != 10*time.Second || lease.Rule.ResponseTimeout != 2*time.Minute {
 		t.Errorf("direct без таймаутов из defaults: %+v", lease.Rule)
+	}
+}
+
+// TestRuleMaxBanDuration — потолок бана наследуется из defaults, как и сам
+// срок, и в конфиге без него появляется значение по умолчанию.
+func TestRuleMaxBanDuration(t *testing.T) {
+	cfg := mustConfig(t, `{
+	  "defaults": {"ban_duration": "5m"},
+	  "proxies": [{"name":"p","url":"http://1.1.1.1:80"}],
+	  "lists": [{"name":"l","proxies":["p"]}],
+	  "domains": [
+	    {"pattern": "inherit.com", "list": "l"},
+	    {"pattern": "strict.com", "list": "l", "max_ban_duration": "6h"}
+	  ]
+	}`)
+	if cfg.Defaults.MaxBanDuration.Duration() != config.DefaultMaxBanDuration {
+		t.Errorf("потолок в defaults не заполнен: %s", cfg.Defaults.MaxBanDuration)
+	}
+	rs := compileRules(cfg)
+	inherit, _ := rs.match("inherit.com")
+	if inherit.MaxBanDuration != config.DefaultMaxBanDuration {
+		t.Errorf("потолок не унаследован: %s", inherit.MaxBanDuration)
+	}
+	strict, _ := rs.match("strict.com")
+	if strict.MaxBanDuration != 6*time.Hour {
+		t.Errorf("свой потолок домена не применён: %s", strict.MaxBanDuration)
+	}
+
+	if _, err := config.Parse([]byte(`{"defaults": {"max_ban_duration": "-1m"}}`)); err == nil {
+		t.Error("отрицательный потолок бана принят")
 	}
 }

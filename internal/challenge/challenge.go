@@ -29,8 +29,15 @@ import (
 const PrefixSize = 64 << 10
 
 // Detect возвращает имя заслона («cloudflare», «datadome», …) или пустую
-// строку. body — начало тела уже без сжатия (см. Decode).
-func Detect(status int, header http.Header, body []byte) string {
+// строку. body — начало тела уже без сжатия (см. Decode); complete — тело
+// уместилось в PrefixSize и видно целиком.
+//
+// Маркеры в теле засчитываются, только если ответ похож на отказ (403,
+// 429, 503) или страница видна целиком. Страницы проверки маленькие —
+// единицы и десятки килобайт, а крупная страница, в которой встретился
+// маркер, — это содержимое: статья о Cloudflare, обсуждение на GitHub,
+// исходник антибота. Бан по ней выключил бы живой прокси.
+func Detect(status int, header http.Header, body []byte, complete bool) string {
 	// Cloudflare честно помечает свои страницы проверки заголовком.
 	if strings.EqualFold(header.Get("Cf-Mitigated"), "challenge") {
 		return "cloudflare"
@@ -53,6 +60,12 @@ func Detect(status int, header http.Header, body []byte) string {
 		return ""
 	}
 
+	refused := status == http.StatusForbidden || status == http.StatusTooManyRequests ||
+		status == http.StatusServiceUnavailable
+	if !refused && !complete {
+		return ""
+	}
+
 	text := strings.ToLower(string(body))
 	for _, m := range strongMarkers {
 		if strings.Contains(text, m.needle) {
@@ -61,9 +74,7 @@ func Detect(status int, header http.Header, body []byte) string {
 	}
 
 	// Слабые маркеры: сам по себе виджет капчи — не заслон.
-	suspicious := status == http.StatusForbidden || status == http.StatusTooManyRequests ||
-		status == http.StatusServiceUnavailable || titleSuggestsChallenge(text)
-	if !suspicious {
+	if !refused && !titleSuggestsChallenge(text) {
 		return ""
 	}
 	for _, m := range weakMarkers {
@@ -119,6 +130,10 @@ var weakMarkers = []marker{
 }
 
 // titleSuggestsChallenge смотрит на <title>: у страниц проверки он говорящий.
+//
+// Только фразы, которых не бывает у обычной страницы с формой. Слово
+// «проверка» или «подтвердите» стоит и в «Проверка статуса заказа», и в
+// «Подтвердите email» — а там же виджет reCAPTCHA, и прокси улетал в бан.
 func titleSuggestsChallenge(text string) bool {
 	start := strings.Index(text, "<title")
 	if start < 0 {
@@ -130,9 +145,9 @@ func titleSuggestsChallenge(text string) bool {
 	}
 	title := text[start : start+end]
 	for _, word := range []string{
-		"captcha", "verify you are human", "are you a robot", "access denied",
-		"security check", "bot detection", "проверка", "капча", "не робот",
-		"доступ ограничен", "подтвердите",
+		"captcha", "verify you are human", "are you a robot", "are you human",
+		"bot detection", "капча", "не робот", "проверка браузера",
+		"доступ ограничен",
 	} {
 		if strings.Contains(title, word) {
 			return true

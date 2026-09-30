@@ -505,3 +505,41 @@ func TestUnbanFromPanel(t *testing.T) {
 		t.Errorf("снятие бана по имени: статус %d", byName.StatusCode)
 	}
 }
+
+// TestDomainViewShowsProbation — вышедший из бана прокси ждёт пробы: в
+// таблице он «на проверке», и следующий запрос (вся доля) уходит ему, как
+// это сделает Select. Номер бана подряд виден, чтобы было понятно, почему
+// следующий бан будет длиннее.
+func TestDomainViewShowsProbation(t *testing.T) {
+	srv, ts := newTestServer(t, "")
+	for i := 0; i < 5; i++ {
+		observe(srv, sample("example.com", "fast", 20*time.Millisecond, 200, nil))
+	}
+	// Бан случился час назад и давно кончился.
+	srv.Ratings.Now = func() time.Time { return time.Now().Add(-time.Hour) }
+	for i := 0; i < 3; i++ {
+		observe(srv, sample("example.com", "slow", 20*time.Millisecond, 0, errors.New("refused")))
+	}
+	srv.Ratings.Now = nil
+
+	var got domainResponse
+	getJSON(t, ts.URL, "/api/domains/example.com", &got)
+	var back, fast *proxyState
+	for i := range got.Proxies {
+		switch got.Proxies[i].Name {
+		case "slow":
+			back = &got.Proxies[i]
+		case "fast":
+			fast = &got.Proxies[i]
+		}
+	}
+	if back == nil || fast == nil {
+		t.Fatalf("прокси пропали из выдачи: %+v", got.Proxies)
+	}
+	if back.Banned || back.Status != "probation" || back.BanStrikes != 1 {
+		t.Errorf("вышедший из бана: %+v", back)
+	}
+	if back.Share != 1 || fast.Share != 0 {
+		t.Errorf("доли: на проверке %v, остальные %v — проба уходит вне очереди", back.Share, fast.Share)
+	}
+}
