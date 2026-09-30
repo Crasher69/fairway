@@ -72,6 +72,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/defaults", s.saveDefaults)
 	mux.HandleFunc("PUT /api/language", s.saveLanguage)
 	mux.HandleFunc("PUT /api/password", s.savePassword)
+	mux.HandleFunc("PUT /api/proxy-auth", s.saveProxyAuth)
 	mux.HandleFunc("GET /api/ca", s.caInfo)
 	mux.HandleFunc("POST /api/ca/install", s.caInstall)
 	mux.HandleFunc("POST /api/ca/uninstall", s.caUninstall)

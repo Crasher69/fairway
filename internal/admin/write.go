@@ -72,7 +72,9 @@ func cloneConfig(src *config.Config) *config.Config {
 		// Пароль панели копируется вместе с остальным: иначе любая правка
 		// из панели молча снимала бы его.
 		AdminPassword: src.AdminPassword,
+		ProxyAuth:     src.ProxyAuth,
 	}
+	dst.ProxyAuth.Users = append([]config.ProxyUser(nil), src.ProxyAuth.Users...)
 	dst.Proxies = append([]config.Proxy(nil), src.Proxies...)
 	dst.Lists = append([]config.List(nil), src.Lists...)
 	for i, l := range src.Lists {
@@ -401,6 +403,19 @@ func (s *Server) saveDefaults(w http.ResponseWriter, r *http.Request) {
 	}
 	s.applyEdit(w, func(cfg *config.Config) error {
 		cfg.Defaults = body
+		return nil
+	})
+}
+
+// saveProxyAuth включает или выключает вход на прокси и задаёт пользователей.
+// Действует сразу: следующее соединение проверяется уже по новым правилам.
+func (s *Server) saveProxyAuth(w http.ResponseWriter, r *http.Request) {
+	var body config.ProxyAuth
+	if !decode(w, r, &body) {
+		return
+	}
+	s.applyEdit(w, func(cfg *config.Config) error {
+		cfg.ProxyAuth = body
 		return nil
 	})
 }

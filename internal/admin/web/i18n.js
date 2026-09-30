@@ -283,6 +283,16 @@ const DICTIONARIES = {
     'Password saved': 'Пароль сохранён',
     'Password removed': 'Пароль убран',
     'Remove the password? The panel will then be open by token only.': 'Убрать пароль? Тогда в панель можно будет войти только по токену.',
+    'Proxy authorization': 'Авторизация на прокси',
+    'By default the proxy is open to anyone who can reach its port. Turn this on if the port is visible beyond your own machines: clients will then have to give a login and password (Proxy-Authorization: Basic). The browser asks for them itself; in an application they go into the proxy settings or the address: http://login:password@host:port.': 'По умолчанию прокси открыт всем, кто достучался до его порта. Включите проверку, если порт виден не только вашим машинам: тогда клиентам придётся назвать логин и пароль (Proxy-Authorization: Basic). Браузер спросит их сам, в программе их указывают в настройках прокси или в адресе: http://логин:пароль@хост:порт.',
+    'require login and password': 'требовать логин и пароль',
+    'Users': 'Пользователи',
+    'login:password — one per line': 'логин:пароль — по одному в строке',
+    'One user per line as login:password. Passwords are stored in the config as plain text, like the passwords of upstream proxies. Changes apply to new connections right away.': 'Один пользователь в строке, в виде логин:пароль. Пароли хранятся в конфиге открытым текстом, как и пароли апстрим-прокси. Изменения действуют на новые соединения сразу.',
+    'on, users: {n}': 'включена, пользователей: {n}',
+    'off, the proxy is open': 'выключена, прокси открыт',
+    'line “{line}”: expected login:password': 'строка «{line}»: ожидается логин:пароль',
+    'Proxy authorization saved': 'Авторизация на прокси сохранена',
   },
 };
 

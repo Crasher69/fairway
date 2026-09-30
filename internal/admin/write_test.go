@@ -655,3 +655,30 @@ func TestLanguageIsSavedAndApplied(t *testing.T) {
 		t.Errorf("после отклонённой правки язык на диске %q", got)
 	}
 }
+
+func TestSaveProxyAuth(t *testing.T) {
+	e := newEditable(t)
+
+	code, body := send(t, "PUT", e.url+"/api/proxy-auth", config.ProxyAuth{Enabled: true})
+	if code != http.StatusBadRequest {
+		t.Errorf("включение без пользователей: статус %d, ожидался 400: %s", code, body)
+	}
+
+	auth := config.ProxyAuth{Enabled: true, Users: []config.ProxyUser{{Login: "u", Password: "p"}}}
+	if code, body := send(t, "PUT", e.url+"/api/proxy-auth", auth); code != http.StatusOK {
+		t.Fatalf("статус %d: %s", code, body)
+	}
+	disk := e.onDisk(t)
+	if !disk.ProxyAuth.Enabled || !disk.ProxyAuth.Allows("u", "p") {
+		t.Errorf("на диске: %+v", disk.ProxyAuth)
+	}
+
+	// Любая другая правка из панели не должна снимать вход на прокси.
+	if code, body := send(t, "PUT", e.url+"/api/language", map[string]string{"language": "ru"}); code != http.StatusOK {
+		t.Fatalf("статус %d: %s", code, body)
+	}
+	defer i18n.Set(i18n.EN)
+	if disk := e.onDisk(t); !disk.ProxyAuth.Enabled || len(disk.ProxyAuth.Users) != 1 {
+		t.Errorf("вход на прокси потерян после другой правки: %+v", disk.ProxyAuth)
+	}
+}

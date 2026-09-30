@@ -5,6 +5,7 @@ package forward
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"io"
 	"log"
@@ -26,6 +27,10 @@ type Server struct {
 	// «нет живого прокси» — клиент получит 503. avoid — имена маршрутов,
 	// через которые этот запрос уже не прошёл; брать их снова нельзя.
 	Pick func(domain string, avoid []string) (*Route, error)
+	// Authorize решает, пускать ли клиента, по его логину и паролю из
+	// Proxy-Authorization (ok — заголовок был и разобрался). nil — пускать
+	// всех: прокси открыт, это поведение по умолчанию.
+	Authorize func(login, password string, ok bool) bool
 	// Observe вызывается по завершении каждого запроса. Может быть nil.
 	Observe func(Sample)
 	// Issuer выпускает сертификаты для расшифровки TLS. Без него правило
@@ -55,6 +60,13 @@ const defaultDialTimeout = 15 * time.Second
 const DefaultReplayBodyLimit = 1 << 20
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.Authorize != nil && !s.Authorize(ProxyCredentials(r)) {
+		// 407 с Proxy-Authenticate: браузер на это спросит логин и пароль
+		// сам, а программа поймёт, что их не хватает.
+		w.Header().Set("Proxy-Authenticate", `Basic realm="fairway", charset="UTF-8"`)
+		http.Error(w, i18n.T("proxy authorization required"), http.StatusProxyAuthRequired)
+		return
+	}
 	if r.Method == http.MethodConnect {
 		s.handleConnect(w, r)
 		return
@@ -421,6 +433,26 @@ func (s *Server) logf(format string, args ...any) {
 	if s.Logger != nil {
 		s.Logger.Printf(format, args...)
 	}
+}
+
+// ProxyCredentials достаёт логин и пароль из Proxy-Authorization: Basic.
+// У http.Request есть BasicAuth, но только для Authorization — заголовка
+// цели, а не прокси.
+func ProxyCredentials(r *http.Request) (login, password string, ok bool) {
+	header := r.Header.Get("Proxy-Authorization")
+	scheme, encoded, found := strings.Cut(header, " ")
+	if !found || !strings.EqualFold(scheme, "Basic") {
+		return "", "", false
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
+	if err != nil {
+		return "", "", false
+	}
+	login, password, ok = strings.Cut(string(raw), ":")
+	if !ok {
+		return "", "", false
+	}
+	return login, password, true
 }
 
 // hostOnly отрезает порт: "example.com:443" → "example.com".
