@@ -61,22 +61,26 @@ func (m *transferMeter) add(n int) {
 // то же правило, что у повтора в MITM: получив от цели хоть байт, нельзя
 // знать, выполнен ли запрос, и повторять его вслепую опасно.
 //
-// Запись в текущее соединение идёт под замком вместе с подменой
-// соединения: иначе кусок, прочитанный до подмены, мог бы уйти и в старое
-// соединение, и в новое при повторе.
+// Под замком — только буфер и выбор соединения, сама запись идёт вне
+// его. Замок на время записи держал бы и seal: апстрим, переставший
+// читать, вешал бы туннель ещё до запуска таймера простоя. Порядок
+// байт при этом сохраняется: кусок, взятый до подмены, лежит в буфере и
+// повторится в новое соединение (в старое, уже закрытое, он не дойдёт),
+// а куски после подмены уходят в новое только после повтора — switchTo
+// пишет его под замком.
 type tunnelHead struct {
-	mu       sync.Mutex
-	dst      net.Conn
-	buf      []byte
-	overflow bool // клиент прислал больше лимита — повтор невозможен
-	sealed   bool // цель ответила, запоминать больше нечего
-	sent     bool // клиент прислал хоть байт
-	activity *atomic.Int64
+	mu        sync.Mutex
+	dst       net.Conn
+	buf       []byte
+	overflow  bool // клиент прислал больше лимита — повтор невозможен
+	sealed    bool // цель ответила, запоминать больше нечего
+	sent      bool // клиент прислал хоть байт
+	writeDone bool // клиент закрыл свою сторону
+	activity  *atomic.Int64
 }
 
 func (h *tunnelHead) write(p []byte) error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	h.sent = true
 	h.activity.Store(time.Now().UnixNano())
 	if !h.sealed && !h.overflow {
@@ -86,14 +90,19 @@ func (h *tunnelHead) write(p []byte) error {
 			h.buf = append(h.buf, p...)
 		}
 	}
-	_, err := h.dst.Write(p)
+	dst := h.dst
+	h.mu.Unlock()
+	_, err := dst.Write(p)
 	return err
 }
 
 // closeWrite — клиент закрыл свою сторону, цель должна увидеть EOF.
+// Запоминается: при повторе через другой прокси новое соединение тоже
+// должно его увидеть, иначе цель ждала бы продолжения до таймаута.
 func (h *tunnelHead) closeWrite() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.writeDone = true
 	closeWrite(h.dst)
 }
 
@@ -117,11 +126,15 @@ func (h *tunnelHead) switchTo(dst net.Conn) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.dst = dst
-	if len(h.buf) == 0 {
-		return nil
+	if len(h.buf) > 0 {
+		if _, err := dst.Write(h.buf); err != nil {
+			return err
+		}
 	}
-	_, err := dst.Write(h.buf)
-	return err
+	if h.writeDone {
+		closeWrite(dst)
+	}
+	return nil
 }
 
 // watchIdle закрывает туннель, если в нём давно нет движения. Одним

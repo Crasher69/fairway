@@ -77,6 +77,9 @@ func init() {
 				return nil, errors.New("refused by plugin")
 			case "panic":
 				panic("boom")
+			case "sleep":
+				// Уснувший плагин не должен держать остановку.
+				time.Sleep(24 * time.Hour)
 			}
 			return nil, errors.New("unknown method " + method)
 		},

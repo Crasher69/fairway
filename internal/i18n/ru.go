@@ -115,6 +115,8 @@ var ru = map[string]string{
 
 	// --- рейтинг ---
 	"parsing ratings %s: %w":             "разбор рейтингов %s: %w",
+	"plugin crashed: %v":                 "плагин упал: %v",
+	"%s does not export memory":          "%s не экспортирует память",
 	"%d failures in a row: %s":           "%d ошибки подряд: %s",
 	"host not found":                     "имя не найдено",
 	"connection refused":                 "соединение отклонено",

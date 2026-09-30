@@ -72,10 +72,20 @@ func (s *Server) mitmTunnel(w http.ResponseWriter, route *Route, target string) 
 	defer up.close()
 
 	clientReader := bufio.NewReader(clientTLS)
+	idle := s.idleTimeout()
 	for {
+		// Между запросами клиент может молчать сколько угодно, а туннель
+		// всё это время держит маршрут: слот рабочего набора домена и
+		// соединение у прокси. Как и прозрачный туннель, простаивающий
+		// дольше IdleTimeout закрывается; браузер откроет новый. На чтение
+		// тела запроса и на ответ срок не действует.
+		if idle > 0 {
+			_ = clientTLS.SetReadDeadline(time.Now().Add(idle))
+		}
 		req, err := http.ReadRequest(clientReader)
+		_ = clientTLS.SetReadDeadline(time.Time{})
 		if err != nil {
-			return up.route // клиент закрыл соединение или прислал мусор
+			return up.route // клиент закрыл соединение, прислал мусор или молчал
 		}
 
 		if s.Hooks != nil {

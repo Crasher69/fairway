@@ -32,6 +32,11 @@ const (
 	callTimeout      = 30 * time.Second
 )
 
+// startTimeout — сколько может идти стартовая функция модуля (init() в
+// Go-плагине). Переменная, а не константа: тест укорачивает её, чтобы не
+// ждать полминуты зависшего init.
+var startTimeout = initTimeout
+
 // instance — один запущенный плагин. Все вызовы модуля идут из одной
 // горутины (run), поэтому поля ниже без замков, кроме status.
 type instance struct {
@@ -62,6 +67,11 @@ type instance struct {
 	tickSet      bool
 	subscribe    []events.Type
 	subscribeSet bool
+
+	// aborted закрывается, когда вызов модуля отменён или плагин
+	// остановлен: на нём просыпается сон плагина (см. nanosleep).
+	aborted   chan struct{}
+	abortOnce sync.Once
 
 	mu     sync.Mutex
 	status runtimeStatus
@@ -105,7 +115,31 @@ func newInstance(m *Manifest, entry config.Plugin, host *Host, logger *log.Logge
 		logger:   logger,
 		journal:  j,
 		calls:    make(chan *uiCall),
+		aborted:  make(chan struct{}),
 		status:   runtimeStatus{State: StateStarting},
+	}
+}
+
+// abort будит спящий плагин. Модуль после этого уже закрыт (отмена
+// контекста вызова закрывает его в wazero), так что будить можно насовсем.
+func (in *instance) abort() {
+	in.abortOnce.Do(func() { close(in.aborted) })
+}
+
+// nanosleep — сон плагина (time.Sleep в Go-плагине), прерываемый отменой.
+// Штатный WithSysNanosleep спит через time.Sleep мимо контекста: отмена
+// вызова прерывает только код модуля, и плагин, уснувший на сутки, держал
+// бы менеджер плагинов (остановка ждёт конца вызова) или копил бы
+// брошенные экземпляры по 128 МиБ.
+func (in *instance) nanosleep(ns int64) {
+	if ns <= 0 {
+		return
+	}
+	t := time.NewTimer(time.Duration(ns))
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-in.aborted:
 	}
 }
 
@@ -183,6 +217,14 @@ func (in *instance) start(ctx context.Context, dir string) error {
 			return i18n.Errorf("%s does not export %s", ModuleFile, name)
 		}
 	}
+	// Сообщения передаются через линейную память модуля. Без неё Memory()
+	// вернул бы nil, и первая же запись уронила бы весь fairway — не
+	// только плагин, а при включённом плагине и каждый следующий запуск.
+	if len(compiled.ExportedMemories()) == 0 {
+		return i18n.Errorf("%s does not export memory", ModuleFile)
+	}
+	// Плагин остановлен — спящий вызов просыпается.
+	context.AfterFunc(ctx, in.abort)
 
 	out := &lineWriter{log: func(line string) { in.logf("%s", line) }}
 	moduleConfig := wazero.NewModuleConfig().
@@ -194,9 +236,16 @@ func (in *instance) start(ctx context.Context, dir string) error {
 		// детерминированные, и плагин видел бы 1970 год.
 		WithSysWalltime().
 		WithSysNanotime().
-		WithSysNanosleep().
+		WithNanosleep(in.nanosleep).
 		WithRandSource(rand.Reader)
-	in.module, err = in.runtime.InstantiateModule(ctx, compiled, moduleConfig)
+	// Стартовая функция модуля (init() в Go-плагине) исполняется здесь, и
+	// бесконечный цикл в ней держал бы плагин в «запускается» и ядро
+	// процессора на 100%, пока плагин не выключат. wazero следит за
+	// контекстом только во время вызова, так что таймаут дальше не мешает.
+	initCtx, cancel := context.WithTimeout(ctx, startTimeout)
+	defer cancel()
+	defer context.AfterFunc(initCtx, in.abort)()
+	in.module, err = in.runtime.InstantiateModule(initCtx, compiled, moduleConfig)
 	return err
 }
 
@@ -215,20 +264,34 @@ func (in *instance) send(ctx context.Context, timeout time.Duration, msg guestMe
 }
 
 // exchange — send, который возвращает ещё и result из ответа плагина.
-func (in *instance) exchange(ctx context.Context, timeout time.Duration, msg guestMessage) (json.RawMessage, error) {
+func (in *instance) exchange(ctx context.Context, timeout time.Duration, msg guestMessage) (result json.RawMessage, err error) {
+	// Сбой на нашей стороне обмена — ошибка плагина, а не падение
+	// процесса: прокси не должен умирать из-за чужого модуля.
+	defer func() {
+		if p := recover(); p != nil {
+			result, err = nil, i18n.Errorf("plugin crashed: %v", p)
+		}
+	}()
 	payload, err := json.Marshal(msg)
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	// Отмена или таймаут будят спящий плагин; stop — раньше cancel, иначе
+	// штатное завершение вызова тоже считалось бы отменой.
+	defer context.AfterFunc(ctx, in.abort)()
+	mem := in.module.Memory()
+	if mem == nil {
+		return nil, i18n.Errorf("%s does not export memory", ModuleFile)
+	}
 
 	res, err := in.module.ExportedFunction(exportAlloc).Call(ctx, uint64(len(payload)))
 	if err != nil {
 		return nil, err
 	}
 	ptr := uint32(res[0])
-	if !in.module.Memory().Write(ptr, payload) {
+	if !mem.Write(ptr, payload) {
 		return nil, i18n.Errorf("%s returned a buffer outside of memory", exportAlloc)
 	}
 	res, err = in.module.ExportedFunction(exportHandle).Call(ctx, uint64(ptr), uint64(len(payload)))
@@ -238,7 +301,7 @@ func (in *instance) exchange(ctx context.Context, timeout time.Duration, msg gue
 	outPtr, outLen := uint32(res[0]>>32), uint32(res[0])
 	var reply guestReply
 	if outLen > 0 {
-		out, ok := in.module.Memory().Read(outPtr, outLen)
+		out, ok := mem.Read(outPtr, outLen)
 		if !ok {
 			return nil, i18n.Errorf("%s returned a reply outside of memory", exportHandle)
 		}
