@@ -20,6 +20,8 @@ func fullConfig() *Config {
 		Proxies:       []Proxy{{ID: NewID(), Name: "a", Scheme: "http", Host: "1.1.1.1", Port: 80}},
 		Lists:         []List{{Name: "all", Proxies: []string{"a"}}},
 		Domains:       []Domain{{Pattern: "*", List: "all", MITM: &mitm}},
+		Plugins: []Plugin{{Name: "p", Enabled: true, Granted: []string{"config.read"},
+			Settings: json.RawMessage(`{"key":"value"}`)}},
 	}
 }
 
@@ -50,9 +52,12 @@ func TestCloneIsDeep(t *testing.T) {
 	dst.Proxies[0].Name = "changed"
 	dst.Lists[0].Proxies[0] = "changed"
 	*dst.Domains[0].MITM = false
+	dst.Plugins[0].Granted[0] = "changed"
+	dst.Plugins[0].Settings[2] = 'X'
 
 	if src.ProxyAuth.Users[0].Login == "changed" || src.Proxies[0].Name == "changed" ||
-		src.Lists[0].Proxies[0] == "changed" || !*src.Domains[0].MITM {
+		src.Lists[0].Proxies[0] == "changed" || !*src.Domains[0].MITM ||
+		src.Plugins[0].Granted[0] == "changed" || string(src.Plugins[0].Settings) != `{"key":"value"}` {
 		t.Fatal("правка копии задела оригинал")
 	}
 }
@@ -151,5 +156,22 @@ func TestEditorReload(t *testing.T) {
 	}
 	if len(*applied) != 1 {
 		t.Fatal("битый файл применён")
+	}
+}
+
+func TestValidatePlugins(t *testing.T) {
+	for _, tc := range []struct {
+		plugins []Plugin
+		ok      bool
+	}{
+		{[]Plugin{{Name: "a"}, {Name: "b", Settings: json.RawMessage(`{"x":1}`)}}, true},
+		{[]Plugin{{Name: ""}}, false},
+		{[]Plugin{{Name: "a"}, {Name: "a"}}, false},
+		{[]Plugin{{Name: "a", Settings: json.RawMessage(`[1]`)}}, false},
+	} {
+		cfg := &Config{Plugins: tc.plugins}
+		if err := cfg.Validate(); (err == nil) != tc.ok {
+			t.Errorf("%+v: %v", tc.plugins, err)
+		}
 	}
 }

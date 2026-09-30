@@ -33,6 +33,13 @@ jobs:
       - name: go test
         run: go test -race ./...
 
+      # SDK плагинов — отдельный модуль под wasip1, корневой go vet его не видит.
+      - name: plugin SDK
+        working-directory: plugin-sdk
+        run: |
+          GOOS=wasip1 GOARCH=wasm go vet ./...
+          GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o /dev/null ./examples/hello
+
       - name: cross-build
         run: |
           CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -o /dev/null ./cmd/fairway

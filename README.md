@@ -282,6 +282,13 @@ failed to parse. Imported proxies can go straight into a list.
 Tables have search, and so does the proxy picker for lists: with fifty
 upstreams there is no other way.
 
+## Plugins
+
+Plugins are WebAssembly modules that fairway runs in a sandbox on any OS:
+syncing proxies with a provider's API, reacting to bans, editing lists. Each
+plugin gets only the permissions its manifest asks for and you grant. How to
+install and write one: [docs/PLUGINS.md](docs/PLUGINS.md) (in Russian for now).
+
 ## MITM: see the requests
 
 Optionally Fairway decrypts HTTPS the way Fiddler or Charles do: it issues

@@ -1,0 +1,14 @@
+{
+  "name": "hello",
+  "version": "0.1.0",
+  "title": "Hello",
+  "description": "Минимальный пример: пишет в лог число прокси.",
+  "kind": "base",
+  "permissions": ["config.read", "schedule"],
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "interval": {"type": "string", "title": "Интервал", "default": "10m"}
+    }
+  }
+}
