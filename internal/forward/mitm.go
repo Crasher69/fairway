@@ -68,7 +68,7 @@ func (s *Server) mitmTunnel(w http.ResponseWriter, route *Route, target string) 
 	}
 	defer clientTLS.Close()
 
-	up := &mitmUpstream{route: route, target: target, timeout: s.dialTimeout(), origin: s.OriginTLS}
+	up := &mitmUpstream{route: route, target: target, srv: s, origin: s.OriginTLS}
 	defer up.close()
 
 	clientReader := bufio.NewReader(clientTLS)
@@ -193,7 +193,7 @@ func (s *Server) roundTrip(up *mitmUpstream, client net.Conn, clientReader *bufi
 		sample.Reused = !fresh
 		var received bool
 		if err == nil {
-			resp, targetReader, ttfb, received, err = exchange(conn, req, up.timeout)
+			resp, targetReader, ttfb, received, err = exchange(conn, req, s.responseTimeout(up.route))
 			if err != nil && retriable && !fresh && !received {
 				// Цель могла закрыть keep-alive соединение, пока оно простаивало, —
 				// это штатная ситуация, а не отказ прокси. Повторяем только если от
@@ -205,7 +205,7 @@ func (s *Server) roundTrip(up *mitmUpstream, client net.Conn, clientReader *bufi
 				sample.Reused = false
 				if err == nil {
 					rewind()
-					resp, targetReader, ttfb, received, err = exchange(conn, req, up.timeout)
+					resp, targetReader, ttfb, received, err = exchange(conn, req, s.responseTimeout(up.route))
 				}
 			}
 		}
@@ -399,10 +399,12 @@ func exchange(conn net.Conn, req *http.Request, wait time.Duration) (resp *http.
 
 // mitmUpstream держит одно TLS-соединение до цели через выбранный апстрим.
 type mitmUpstream struct {
-	route   *Route
-	target  string
-	timeout time.Duration
-	origin  *tls.Config
+	route  *Route
+	target string
+	// srv — откуда брать таймауты: они зависят от маршрута, а маршрут
+	// меняется при повторе через другой прокси.
+	srv    *Server
+	origin *tls.Config
 
 	conn net.Conn
 }
@@ -414,7 +416,7 @@ func (u *mitmUpstream) connection() (net.Conn, time.Duration, bool, error) {
 	if u.conn != nil {
 		return u.conn, 0, false, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), u.timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), u.srv.connectTimeout(u.route))
 	defer cancel()
 
 	started := time.Now()

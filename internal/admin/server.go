@@ -260,6 +260,8 @@ type ruleView struct {
 	MaxParallelProxies int    `json:"max_parallel_proxies"`
 	MaxConnsPerProxy   int    `json:"max_conns_per_proxy"`
 	BanDuration        string `json:"ban_duration"`
+	ConnectTimeout     string `json:"connect_timeout"`
+	ResponseTimeout    string `json:"response_timeout"`
 	Known              bool   `json:"known"`
 }
 
@@ -278,6 +280,8 @@ func (s *Server) domain(w http.ResponseWriter, r *http.Request) {
 			MaxParallelProxies: rule.MaxParallelProxies,
 			MaxConnsPerProxy:   rule.MaxConnsPerProxy,
 			BanDuration:        rule.BanDuration.String(),
+			ConnectTimeout:     rule.ConnectTimeout.String(),
+			ResponseTimeout:    rule.ResponseTimeout.String(),
 			Known:              true,
 		}
 	}

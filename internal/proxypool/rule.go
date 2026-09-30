@@ -17,6 +17,8 @@ type Rule struct {
 	MaxConnsPerProxy   int
 	MITM               bool
 	BanDuration        time.Duration
+	ConnectTimeout     time.Duration
+	ResponseTimeout    time.Duration
 }
 
 // ruleSet — скомпилированные правила: точные имена, wildcard-суффиксы и
@@ -26,6 +28,7 @@ type ruleSet struct {
 	wildcards []wildcardRule // отсортированы по длине суффикса, длинные первыми
 	catchAll  *Rule          // паттерн "*"
 	fallback  *Rule          // defaults, если в нём указан лист
+	direct    Rule           // для прямого соединения без правила
 }
 
 type wildcardRule struct {
@@ -45,6 +48,8 @@ func compileRules(cfg *config.Config) *ruleSet {
 			MaxConnsPerProxy:   inheritLimit(dom.MaxConnsPerProxy, d.MaxConnsPerProxy),
 			MITM:               d.MITM,
 			BanDuration:        dom.BanDuration.Duration(),
+			ConnectTimeout:     inheritDuration(dom.ConnectTimeout, d.ConnectTimeout),
+			ResponseTimeout:    inheritDuration(dom.ResponseTimeout, d.ResponseTimeout),
 		}
 		if dom.MITM != nil {
 			r.MITM = *dom.MITM
@@ -70,6 +75,11 @@ func compileRules(cfg *config.Config) *ruleSet {
 		return len(rs.wildcards[i].suffix) > len(rs.wildcards[j].suffix)
 	})
 
+	rs.direct = Rule{
+		Pattern:         "(direct)",
+		ConnectTimeout:  d.ConnectTimeout.Duration(),
+		ResponseTimeout: d.ResponseTimeout.Duration(),
+	}
 	if d.List != "" {
 		rs.fallback = &Rule{
 			Pattern:            "(defaults)",
@@ -78,6 +88,8 @@ func compileRules(cfg *config.Config) *ruleSet {
 			MaxConnsPerProxy:   normalizeLimit(d.MaxConnsPerProxy),
 			MITM:               d.MITM,
 			BanDuration:        d.BanDuration.Duration(),
+			ConnectTimeout:     d.ConnectTimeout.Duration(),
+			ResponseTimeout:    d.ResponseTimeout.Duration(),
 		}
 	}
 	return rs
@@ -110,6 +122,14 @@ func inheritLimit(v, def int) int {
 		return normalizeLimit(def)
 	}
 	return normalizeLimit(v)
+}
+
+// inheritDuration: пусто — взять из defaults.
+func inheritDuration(v, def config.Duration) time.Duration {
+	if v == 0 {
+		return def.Duration()
+	}
+	return v.Duration()
 }
 
 // normalizeLimit приводит «без ограничения» к нулю, удобному для проверок.

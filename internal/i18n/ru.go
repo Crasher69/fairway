@@ -61,6 +61,8 @@ var ru = map[string]string{
 	"domains[%d] (%s): a limit below -1 makes no sense (0 — inherit, -1 — unlimited)": "domains[%d] (%s): лимит меньше -1 бессмыслен (0 — наследовать, -1 — без ограничения)",
 	"defaults: no list named %q":                                                  "defaults: нет листа с именем %q",
 	"defaults: a limit below -1 makes no sense (0 and -1 — unlimited)":            "defaults: лимит меньше -1 бессмыслен (0 и -1 — без ограничения)",
+	"defaults: a timeout cannot be negative":                                      "defaults: таймаут не может быть отрицательным",
+	"domains[%d] (%s): a timeout cannot be negative":                              "domains[%d] (%s): таймаут не может быть отрицательным",
 	"pattern %q: only \"example.com\", \"*.example.com\" and \"*\" are supported": "паттерн %q: поддерживаются только \"example.com\", \"*.example.com\" и \"*\"",
 
 	// --- импорт ---

@@ -165,7 +165,8 @@ three HTTP 403, 429 or 451 in a row (a single 403 is often about one URL, not
 the proxy), an HTTP 407, three consecutive connection failures, or a captcha /
 challenge page instead of content (MITM mode). A proxy that accepts the
 connection and then never delivers a byte from the target counts as a
-connection failure too: the target has to answer within the dial timeout.
+connection failure too: the target has to answer within the connect timeout
+(for a tunnel) or the response timeout (for a request), see below.
 A request the client itself abandoned (closed tab, navigated away) does not
 count against the proxy. If every proxy of a list is banned for a domain,
 requests go through the one whose ban ends first instead of getting a 503.
@@ -200,7 +201,9 @@ not applied: the previous version stays in service.
     "list": "residential",
     "allow_direct": false,
     "max_conns_per_proxy": 32,
-    "ban_duration": "5m"
+    "ban_duration": "5m",
+    "connect_timeout": "15s",
+    "response_timeout": "1m"
   },
   "proxies": [
     {
@@ -218,10 +221,24 @@ not applied: the previous version stays in service.
   "lists": [{"name": "residential", "proxies": ["p1", "p2"]}],
   "domains": [
     {"pattern": "example.com", "list": "residential", "max_parallel_proxies": 3},
-    {"pattern": "*.example.com", "list": "residential", "mitm": true}
+    {"pattern": "*.example.com", "list": "residential", "mitm": true},
+    {"pattern": "reports.example.org", "list": "residential", "response_timeout": "5m"}
   ]
 }
 ```
+
+Two timeouts, both in `defaults` and in a domain rule (empty in a rule means
+"take from `defaults`"):
+
+- `connect_timeout` — how long to wait for a connection to the site through a
+  proxy (for a tunnel, until the site's first byte, i.e. the TLS handshake);
+- `response_timeout` — how long to wait for the first byte of the response to
+  a request (plain HTTP and MITM). The body may take as long as it takes.
+
+Missing either one counts as a failure of that proxy for the domain, and the
+request is retried through another proxy. Raise `response_timeout` for a site
+that is slow to think (reports, exports), or healthy proxies get banned for
+it. A config without timeouts gets `15s` and `1m` in `defaults` on load.
 
 Two limits are easy to mix up:
 

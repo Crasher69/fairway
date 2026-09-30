@@ -351,6 +351,7 @@ function renderRule(rule) {
       chip(t('proxies at once'), rule.max_parallel_proxies || t('unlimited')),
       chip(t('connections per proxy'), rule.max_conns_per_proxy || t('unlimited')),
       chip(t('ban'), humanDuration(rule.ban_duration)),
+      chip(t('timeouts'), humanDuration(rule.connect_timeout) + ' / ' + humanDuration(rule.response_timeout)),
     );
     link.textContent = t('Edit rule');
     link.dataset.action = 'edit';
@@ -1954,12 +1955,12 @@ function renderRuleTable() {
   const body = $('cfg-domains').querySelector('tbody');
   $('rule-count').textContent = settings.domains.length ? `${settings.domains.length}` : '';
   if (!settings.domains.length) {
-    body.replaceChildren(emptyRow(7, t('No rules yet — all domains follow the general settings')));
+    body.replaceChildren(emptyRow(8, t('No rules yet — all domains follow the general settings')));
     return;
   }
   const shown = settings.domains.filter((d) => matches(filters.rule, d.pattern, d.list));
   if (!shown.length) {
-    body.replaceChildren(emptyRow(7, t('Nothing matches the search')));
+    body.replaceChildren(emptyRow(8, t('Nothing matches the search')));
     return;
   }
   body.replaceChildren(...shown.map((d) => {
@@ -1988,6 +1989,7 @@ function renderRuleTable() {
       inherited(d.max_parallel_proxies, settings.defaults.max_parallel_proxies, limit),
       inherited(d.max_conns_per_proxy, settings.defaults.max_conns_per_proxy, limit),
       inherited(d.ban_duration, settings.defaults.ban_duration, (v) => (v ? humanDuration(v) : t('off'))),
+      timeoutsCell(d),
       actionCell(
         button(t('Edit'), () => startRuleEdit(d), 'ghost'),
         button(t('Delete'), () => {
@@ -2000,6 +2002,19 @@ function renderRuleTable() {
   }));
 }
 
+// timeoutsCell — «подключение / ответ»; унаследованное приглушено, как
+// в соседних колонках.
+function timeoutsCell(d) {
+  const general = settings.defaults;
+  const td = cell(humanDuration(d.connect_timeout || general.connect_timeout)
+    + ' / ' + humanDuration(d.response_timeout || general.response_timeout));
+  if (!d.connect_timeout && !d.response_timeout) {
+    td.classList.add('dim');
+    td.title = t('from general settings');
+  }
+  return td;
+}
+
 function startRuleEdit(rule) {
   editing.rule = rule.pattern;
   const form = $('rule-form');
@@ -2009,6 +2024,8 @@ function startRuleEdit(rule) {
   form.max_parallel_proxies.value = rule.max_parallel_proxies ?? '';
   form.max_conns_per_proxy.value = rule.max_conns_per_proxy ?? '';
   form.ban_duration.value = rule.ban_duration || '';
+  form.connect_timeout.value = rule.connect_timeout || '';
+  form.response_timeout.value = rule.response_timeout || '';
   $('rule-form-title').textContent = t('Edit rule: {pattern}', { pattern: rule.pattern });
   $('rule-form-cancel').hidden = false;
   openPanel('rule-form-card');
@@ -2033,6 +2050,8 @@ $('rule-form').onsubmit = (event) => {
     max_parallel_proxies: number(form.max_parallel_proxies.value),
     max_conns_per_proxy: number(form.max_conns_per_proxy.value),
     ban_duration: form.ban_duration.value.trim(),
+    connect_timeout: form.connect_timeout.value.trim(),
+    response_timeout: form.response_timeout.value.trim(),
   };
   if (form.mitm.checked) rule.mitm = true;
 
@@ -2081,6 +2100,8 @@ function fillDefaults() {
   form.max_parallel_proxies.value = settings.defaults.max_parallel_proxies ?? '';
   form.max_conns_per_proxy.value = settings.defaults.max_conns_per_proxy ?? '';
   form.ban_duration.value = settings.defaults.ban_duration || '';
+  form.connect_timeout.value = settings.defaults.connect_timeout || '';
+  form.response_timeout.value = settings.defaults.response_timeout || '';
 }
 
 $('defaults-form').onsubmit = (event) => {
@@ -2093,6 +2114,8 @@ $('defaults-form').onsubmit = (event) => {
     max_parallel_proxies: number(form.max_parallel_proxies.value),
     max_conns_per_proxy: number(form.max_conns_per_proxy.value),
     ban_duration: form.ban_duration.value.trim(),
+    connect_timeout: form.connect_timeout.value.trim(),
+    response_timeout: form.response_timeout.value.trim(),
   }), t('General settings saved'));
 };
 

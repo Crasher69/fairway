@@ -146,7 +146,20 @@ type Defaults struct {
 	MaxConnsPerProxy   int      `json:"max_conns_per_proxy"`
 	MITM               bool     `json:"mitm"`
 	BanDuration        Duration `json:"ban_duration"`
+	// ConnectTimeout — сколько ждать соединения с сайтом через прокси.
+	// Не уложился — прокси для этого домена считается неудачным, и запрос
+	// уходит через другой.
+	ConnectTimeout Duration `json:"connect_timeout"`
+	// ResponseTimeout — сколько ждать от сайта первого байта ответа после
+	// того, как соединение есть. Тело ответа может идти сколько угодно.
+	ResponseTimeout Duration `json:"response_timeout"`
 }
+
+// Таймауты, которые подставляются в defaults, если там пусто.
+const (
+	DefaultConnectTimeout  = 15 * time.Second
+	DefaultResponseTimeout = 60 * time.Second
+)
 
 // Proxy — один апстрим-прокси.
 //
@@ -272,6 +285,9 @@ type Domain struct {
 	// Ноль не пишем в файл: он значит «наследовать», а явный "0s" читался бы
 	// как «баны выключены».
 	BanDuration Duration `json:"ban_duration,omitempty"`
+	// ConnectTimeout и ResponseTimeout — как в defaults; пусто — оттуда.
+	ConnectTimeout  Duration `json:"connect_timeout,omitempty"`
+	ResponseTimeout Duration `json:"response_timeout,omitempty"`
 }
 
 // Duration — time.Duration, записанный в JSON строкой: "5m", "1h30m".
@@ -429,6 +445,8 @@ func (c *Config) Validate() error {
 			return i18n.Errorf("domains[%d] (%s): no list named %q", i, d.Pattern, d.List)
 		case d.MaxParallelProxies < -1 || d.MaxConnsPerProxy < -1:
 			return i18n.Errorf("domains[%d] (%s): a limit below -1 makes no sense (0 — inherit, -1 — unlimited)", i, d.Pattern)
+		case d.ConnectTimeout < 0 || d.ResponseTimeout < 0:
+			return i18n.Errorf("domains[%d] (%s): a timeout cannot be negative", i, d.Pattern)
 		}
 		if err := validatePattern(d.Pattern); err != nil {
 			return fmt.Errorf("domains[%d]: %w", i, err)
@@ -443,6 +461,19 @@ func (c *Config) Validate() error {
 	// Ноль там значит ровно это же, но запрещать -1 было бы неожиданно.
 	if c.Defaults.MaxParallelProxies < -1 || c.Defaults.MaxConnsPerProxy < -1 {
 		return i18n.Errorf("defaults: a limit below -1 makes no sense (0 and -1 — unlimited)")
+	}
+	if c.Defaults.ConnectTimeout < 0 || c.Defaults.ResponseTimeout < 0 {
+		return i18n.Errorf("defaults: a timeout cannot be negative")
+	}
+	// Пустые таймауты заполняются, и файл переписывается: значения должны
+	// быть видны в конфиге, чтобы было ясно, что менять.
+	if c.Defaults.ConnectTimeout == 0 {
+		c.Defaults.ConnectTimeout = Duration(DefaultConnectTimeout)
+		c.migrated = true
+	}
+	if c.Defaults.ResponseTimeout == 0 {
+		c.Defaults.ResponseTimeout = Duration(DefaultResponseTimeout)
+		c.migrated = true
 	}
 	return nil
 }
@@ -466,6 +497,8 @@ func Example() *Config {
 			AllowDirect:      true,
 			MaxConnsPerProxy: 32,
 			BanDuration:      Duration(5 * time.Minute),
+			ConnectTimeout:   Duration(DefaultConnectTimeout),
+			ResponseTimeout:  Duration(DefaultResponseTimeout),
 		},
 		Proxies: []Proxy{},
 		Lists:   []List{},

@@ -427,11 +427,17 @@
           <label class="field"><span data-t>Ban</span>
             <input name="ban_duration" placeholder="5m" size="8">
           </label>
+          <label class="field"><span data-t>Connect timeout</span>
+            <input name="connect_timeout" placeholder="15s" size="8">
+          </label>
+          <label class="field"><span data-t>Response timeout</span>
+            <input name="response_timeout" placeholder="60s" size="8">
+          </label>
         </div>
         <div class="form-actions">
           <button class="primary" data-t>Save rule</button>
           <button type="button" class="ghost" id="rule-form-cancel" hidden data-t>Cancel</button>
-          <span class="hint" data-t-html>Zero in a limit means “take from general settings”, −1 means “unlimited”. Ban is a Go duration: <code>5m</code>, <code>1h30m</code>.</span>
+          <span class="hint" data-t-html>Zero in a limit means “take from general settings”, −1 means “unlimited”. Ban and timeouts are Go durations: <code>30s</code>, <code>5m</code>, <code>1h30m</code>; empty means “as in general settings”.</span>
         </div>
       </form>
     </div>
@@ -461,6 +467,12 @@
           <label class="field"><span data-t>Ban</span>
             <input name="ban_duration" placeholder="5m" size="8">
           </label>
+          <label class="field"><span data-t>Connect timeout</span>
+            <input name="connect_timeout" placeholder="15s" size="8">
+          </label>
+          <label class="field"><span data-t>Response timeout</span>
+            <input name="response_timeout" placeholder="60s" size="8">
+          </label>
         </div>
         <div class="form-actions">
           <button class="primary" data-t>Save</button>
@@ -482,7 +494,8 @@
               <th data-t>Pattern</th><th data-t>List</th><th>TLS</th>
               <th class="num" data-t data-t-title title="How many different proxies from the list work on the domain at the same time">Proxies at once</th>
               <th class="num" data-t data-t-title title="How many connections one proxy holds">Connections</th>
-              <th data-t>Ban</th><th></th>
+              <th data-t>Ban</th>
+              <th data-t data-t-title title="Connect timeout / response timeout">Timeouts</th><th></th>
             </tr>
           </thead>
           <tbody></tbody>

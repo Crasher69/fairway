@@ -412,3 +412,34 @@ func TestApplyPicksUpNewCredentials(t *testing.T) {
 		t.Errorf("после Release осталось %d активных", a.Active())
 	}
 }
+
+func TestRuleTimeouts(t *testing.T) {
+	cfg := mustConfig(t, `{
+	  "defaults": {"allow_direct": true, "connect_timeout": "10s", "response_timeout": "2m"},
+	  "proxies": [{"name":"p","url":"http://1.1.1.1:80"}],
+	  "lists": [{"name":"l","proxies":["p"]}],
+	  "domains": [
+	    {"pattern": "inherit.com", "list": "l"},
+	    {"pattern": "slow.com", "list": "l", "response_timeout": "5m"}
+	  ]
+	}`)
+	rs := compileRules(cfg)
+	inherit, _ := rs.match("inherit.com")
+	if inherit.ConnectTimeout != 10*time.Second || inherit.ResponseTimeout != 2*time.Minute {
+		t.Errorf("таймауты не унаследованы: %+v", inherit)
+	}
+	slow, _ := rs.match("slow.com")
+	if slow.ConnectTimeout != 10*time.Second || slow.ResponseTimeout != 5*time.Minute {
+		t.Errorf("свой таймаут домена не применён: %+v", slow)
+	}
+
+	pool, _ := New(cfg)
+	lease, err := pool.Acquire("другой.домен")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if lease.Rule.ConnectTimeout != 10*time.Second || lease.Rule.ResponseTimeout != 2*time.Minute {
+		t.Errorf("direct без таймаутов из defaults: %+v", lease.Rule)
+	}
+}

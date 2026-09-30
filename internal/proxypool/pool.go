@@ -195,7 +195,7 @@ func (p *Pool) Acquire(domain string, avoid ...string) (*Lease, error) {
 		}
 		// Прямое соединение: правил нет, но defaults.allow_direct разрешает.
 		direct.active.Add(1)
-		return &Lease{Proxy: direct, Rule: Rule{Pattern: "(direct)"}, pool: p, domain: domain}, nil
+		return &Lease{Proxy: direct, Rule: rules.direct, pool: p, domain: domain}, nil
 	}
 
 	members := lists[rule.List]
