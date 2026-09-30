@@ -77,30 +77,30 @@ func Detect(status int, header http.Header, body []byte) string {
 type marker struct{ needle, vendor string }
 
 // strongMarkers встречаются только на страницах проверки. Все в нижнем
-// регистре: тело приводится к нему перед поиском.
+// регистре: тело приводится к нему перед поиском. Срабатывают при любом
+// статусе, в том числе на 200, и сразу банят прокси для домена, поэтому
+// сюда попадает только то, чего на обычной странице не бывает.
 var strongMarkers = []marker{
 	{"_cf_chl_opt", "cloudflare"},
-	{"challenge-platform", "cloudflare"},
 	{"cf-chl-", "cloudflare"},
 	{"<title>just a moment...</title>", "cloudflare"},
 	{"attention required! | cloudflare", "cloudflare"},
 	{"captcha-delivery.com", "datadome"},
-	{"dd.js", "datadome"}, // <script src="…/dd.js"> ставит только DataDome
-	{"_incapsula_resource", "imperva"},
 	{"px-captcha", "perimeterx"},
-	{"_pxhc", "perimeterx"},
 	{"distil_r_captcha", "distil"},
 	{"pardon our interruption", "distil"},
-	{"smartcaptcha.yandexcloud.net", "yandex"},
 	{"/showcaptcha", "yandex"},
 	{"/checkcaptcha", "yandex"},
 	{"awswaf-captcha", "aws-waf"},
-	{"aws-waf-token", "aws-waf"},
-	{"kasada", "kasada"},
-	{"ak-challenge", "akamai"},
 }
 
-// weakMarkers — виджеты капчи, которые стоят и на обычных формах.
+// weakMarkers — то, что стоит и на обычных страницах: виджеты капчи на
+// формах и скрипты антиботов, которые вставляются в каждую страницу
+// сайта. Считаются только на ответе, который и так похож на отказ.
+//
+// Пример, из-за которого список разделён: Cloudflare Bot Management
+// подгружает /cdn-cgi/challenge-platform/… в обычные страницы со
+// статусом 200, и как сильный маркер это банило каждый прокси.
 var weakMarkers = []marker{
 	{"g-recaptcha", "recaptcha"},
 	{"recaptcha/api.js", "recaptcha"},
@@ -108,6 +108,14 @@ var weakMarkers = []marker{
 	{"hcaptcha.com", "hcaptcha"},
 	{"cf-turnstile", "turnstile"},
 	{"challenges.cloudflare.com/turnstile", "turnstile"},
+	{"challenge-platform", "cloudflare"},
+	{"/dd.js", "datadome"}, // со слешем: без него совпадал и /js/add.js
+	{"_incapsula_resource", "imperva"},
+	{"_pxhc", "perimeterx"},
+	{"smartcaptcha.yandexcloud.net", "yandex"},
+	{"aws-waf-token", "aws-waf"},
+	{"kasada", "kasada"},
+	{"ak-challenge", "akamai"},
 }
 
 // titleSuggestsChallenge смотрит на <title>: у страниц проверки он говорящий.

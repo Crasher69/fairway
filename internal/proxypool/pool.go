@@ -104,14 +104,14 @@ func (p *Pool) Apply(cfg *config.Config) error {
 		switch {
 		case !known:
 			proxies[pc.ID] = &Proxy{ID: pc.ID, Name: pc.Name, Upstream: up, active: new(atomic.Int64)}
-		case old.Name == pc.Name && old.Upstream.Name == up.Name:
+		case old.Name == pc.Name && sameUpstream(old.Upstream, up):
 			proxies[pc.ID] = old // ничего не поменялось
 		default:
-			// Тот же прокси под новым именем или с новым адресом: счётчик
-			// общий, а соединения к прежнему адресу остаются в старом
-			// апстриме, если адрес не менялся.
+			// Тот же прокси под новым именем, с новым адресом или паролем:
+			// счётчик общий, а соединения остаются в старом апстриме, только
+			// если не поменялось ничего, что влияет на подключение.
 			next := &Proxy{ID: pc.ID, Name: pc.Name, Upstream: up, active: old.active}
-			if old.Upstream.Name == up.Name {
+			if sameUpstream(old.Upstream, up) {
 				next.Upstream = old.Upstream
 			}
 			proxies[pc.ID] = next
@@ -146,6 +146,13 @@ func (p *Pool) Apply(cfg *config.Config) error {
 		}
 	}
 	return nil
+}
+
+// sameUpstream сообщает, можно ли оставить прежний апстрим. Имени мало:
+// в нём нет логина и пароля (оно попадает в логи), а сменённый у
+// провайдера пароль иначе применялся бы только после перезапуска.
+func sameUpstream(a, b *forward.Upstream) bool {
+	return a.Name == b.Name && a.User == b.User && a.Pass == b.Pass
 }
 
 // Lease — выданное на время запроса право использовать прокси.

@@ -231,6 +231,11 @@ func (r *Registry) Observe(sample forward.Sample) {
 	if sample.Domain == "" || key == "" {
 		return
 	}
+	// Клиент ушёл сам — о прокси такой замер не говорит ничего: ни
+	// скорости (ответ оборван), ни ошибки (оборвали не его).
+	if sample.ClientGone {
+		return
+	}
 	now := r.now()
 	stats := r.Stats(sample.Domain, key)
 
@@ -260,7 +265,8 @@ func (r *Registry) Observe(sample forward.Sample) {
 // Select — стратегия выбора прокси для пула (proxypool.Selector).
 //
 // Порядок такой:
-//  1. забаненные для домена исключаются целиком;
+//  1. забаненные для домена исключаются; если забанены все, берётся тот,
+//     чей бан кончится раньше (см. ниже);
 //  2. непроверенные (замеров меньше minSamples), у которых на домене ничего
 //     не висит, идут первыми — иначе новый прокси никогда не наберёт
 //     статистику и останется невидимым;
@@ -276,6 +282,13 @@ func (r *Registry) Observe(sample forward.Sample) {
 // получает один запрос на проверку, а следующий — только когда первый
 // завершился (успехом или ошибкой) или его взяла разведка.
 //
+// Почему при всех забаненных не отказ. Раньше клиент получал 503 до конца
+// бана, но баны бывают и не по вине прокси: сайт лежал, и каждая попытка
+// списалась на прокси, или сайт отдавал 403 на закрытые адреса. Тогда
+// домен оставался мёртвым и после того, как сайт поднялся. Запрос через
+// прокси, который скоро выйдет из бана, в худшем случае получит от сайта
+// тот же отказ, но настоящий, а в лучшем — пройдёт.
+//
 // Взвешенный случайный, а не «всегда лучший»: постоянный победитель забрал бы
 // весь трафик, упёрся в лимит соединений и деградировал, а его замеры перестали
 // бы отражать реальность.
@@ -287,9 +300,16 @@ func (r *Registry) Select(domain string, candidates []proxypool.Candidate) *prox
 
 	alive := make([]proxypool.Candidate, 0, len(candidates))
 	fresh := make([]*proxypool.Proxy, 0, len(candidates))
+	var (
+		fallback     *proxypool.Proxy
+		fallbackFree time.Time
+	)
 	for _, c := range candidates {
 		stats := r.Stats(domain, c.Proxy.ID)
-		if banned, _, _ := stats.Banned(now); banned {
+		if banned, until, _ := stats.Banned(now); banned {
+			if fallback == nil || until.Before(fallbackFree) {
+				fallback, fallbackFree = c.Proxy, until
+			}
 			continue
 		}
 		alive = append(alive, c)
@@ -297,9 +317,9 @@ func (r *Registry) Select(domain string, candidates []proxypool.Candidate) *prox
 			fresh = append(fresh, c.Proxy)
 		}
 	}
-	// Все забанены — пусть пул решает, что с этим делать.
+	// Все забанены — берём того, кто выйдет из бана раньше всех.
 	if len(alive) == 0 {
-		return nil
+		return fallback
 	}
 	if len(fresh) > 0 {
 		return fresh[r.intn(len(fresh))]

@@ -37,6 +37,13 @@ const (
 	// из ротации: дохлый прокси не должен получать запросы каждый раунд.
 	failsBeforeBan = 3
 
+	// blocksBeforeBan — столько подряд ответов «доступ запрещён» (403, 429,
+	// 451) выводят прокси из ротации для домена. Не с первого раза: 403
+	// часто относится к одному адресу (закрытый API, приватный файл на
+	// CDN, защита от хотлинка), а не к IP прокси, и один такой ответ банил
+	// бы здоровый прокси. Любой другой ответ серию обнуляет.
+	blocksBeforeBan = 3
+
 	// slowThroughput — подстраховка, когда скорость ещё не измерена:
 	// 256 КБ/с, чтобы неизвестная скорость не выглядела бесконечной.
 	slowThroughput = 256 * 1024
@@ -55,10 +62,11 @@ type Stats struct {
 	errors   int64
 	bans     int64
 
-	consecutiveFails int
-	bannedUntil      time.Time
-	banReason        string
-	lastUsed         time.Time
+	consecutiveFails  int
+	consecutiveBlocks int
+	bannedUntil       time.Time
+	banReason         string
+	lastUsed          time.Time
 }
 
 // newStats заводит пустую пару. Время создания записывается в lastUsed:
@@ -121,20 +129,31 @@ func (s *Stats) add(o observation, banFor time.Duration) string {
 	}
 
 	// Страница проверки — тот же бан, что и 403: сайт узнал прокси и не
-	// пускает, только вежливо. Статус при этом может быть 200.
+	// пускает, только вежливо. Статус при этом может быть 200. Детектор
+	// срабатывает только на однозначные признаки, поэтому бан сразу.
 	if o.challenge != "" {
 		return s.banLocked(o.at, banFor, i18n.T("captcha: ")+o.challenge)
 	}
-	if reason := banReasonForStatus(o.status); reason != "" {
-		return s.banLocked(o.at, banFor, reason)
+	// Прокси не принял наш логин и пароль — ждать повторов незачем.
+	if o.status == 407 {
+		return s.banLocked(o.at, banFor, i18n.T("407 — proxy rejected authorization"))
 	}
-	return ""
+	reason := blockReason(o.status)
+	if reason == "" {
+		s.consecutiveBlocks = 0
+		return ""
+	}
+	s.consecutiveBlocks++
+	if s.consecutiveBlocks < blocksBeforeBan {
+		return ""
+	}
+	return s.banLocked(o.at, banFor, reason)
 }
 
-// banReasonForStatus отличает «прокси мёртв для этого домена» от «медленно».
+// blockReason отличает «сайт не пускает этот прокси» от «медленно».
 // Это разные вещи: медленный прокси остаётся в ротации с низким весом,
 // забаненный выключается целиком, но только для этого домена.
-func banReasonForStatus(status int) string {
+func blockReason(status int) string {
 	switch status {
 	case 403:
 		return i18n.T("403 — access denied")
@@ -142,8 +161,6 @@ func banReasonForStatus(status int) string {
 		return i18n.T("429 — too many requests")
 	case 451:
 		return i18n.T("451 — blocked by legal demand")
-	case 407:
-		return i18n.T("407 — proxy rejected authorization")
 	}
 	return ""
 }
@@ -177,6 +194,7 @@ func (s *Stats) unban(now time.Time) bool {
 	s.bannedUntil = time.Time{}
 	s.banReason = ""
 	s.consecutiveFails = 0
+	s.consecutiveBlocks = 0
 	return true
 }
 

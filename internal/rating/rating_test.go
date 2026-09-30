@@ -72,6 +72,14 @@ func sample(domain, proxy string, connect, ttfb time.Duration, bytes int64, stat
 	}
 }
 
+// block скармливает столько одинаковых отказов подряд, сколько нужно для
+// бана по статусу.
+func block(r *Registry, s forward.Sample) {
+	for i := 0; i < blocksBeforeBan; i++ {
+		r.Observe(s)
+	}
+}
+
 func TestObserveSplitsFastAndSlow(t *testing.T) {
 	r := NewRegistry()
 	for i := 0; i < 10; i++ {
@@ -129,11 +137,18 @@ func TestBanOnStatus(t *testing.T) {
 		banned = append(banned, proxy+" "+reason)
 	}
 
-	r.Observe(sample("example.com", "p1", 10*time.Millisecond, 10*time.Millisecond, 1000, 429, nil))
+	limited := sample("example.com", "p1", 10*time.Millisecond, 10*time.Millisecond, 1000, 429, nil)
+	for i := 0; i < blocksBeforeBan-1; i++ {
+		r.Observe(limited)
+	}
 	stats := r.Stats("example.com", "p1")
+	if isBanned, _, _ := stats.Banned(now); isBanned {
+		t.Fatalf("бан раньше %d отказов подряд", blocksBeforeBan)
+	}
+	r.Observe(limited)
 	isBanned, until, reason := stats.Banned(now)
 	if !isBanned {
-		t.Fatal("429 должен выключать прокси для домена")
+		t.Fatalf("%d ответов 429 подряд должны выключать прокси для домена", blocksBeforeBan)
 	}
 	if until != now.Add(5*time.Minute) {
 		t.Errorf("бан до %s, ожидалось %s", until, now.Add(5*time.Minute))
@@ -324,7 +339,7 @@ func TestSelectSkipsBanned(t *testing.T) {
 		r.Observe(sample("example.com", "good", 10*time.Millisecond, 10*time.Millisecond, 100_000, 200, nil))
 		r.Observe(sample("example.com", "banned", 10*time.Millisecond, 10*time.Millisecond, 100_000, 200, nil))
 	}
-	r.Observe(sample("example.com", "banned", 10*time.Millisecond, 10*time.Millisecond, 1000, 403, nil))
+	block(r, sample("example.com", "banned", 10*time.Millisecond, 10*time.Millisecond, 1000, 403, nil))
 
 	for i := 0; i < 50; i++ {
 		if got := r.Select("example.com", candidates(t, pool)); got.Name == "banned" {
@@ -333,18 +348,26 @@ func TestSelectSkipsBanned(t *testing.T) {
 	}
 }
 
-func TestSelectReturnsNilWhenAllBanned(t *testing.T) {
+// TestSelectFallsBackWhenAllBanned — когда забанены все, клиент получает
+// не 503, а прокси, который выйдет из бана раньше остальных: бан мог быть
+// и не по вине прокси (сайт лежал), и держать домен мёртвым до конца бана
+// незачем.
+func TestSelectFallsBackWhenAllBanned(t *testing.T) {
 	now := time.Now()
 	pool := poolWith(t, "p1", "p2")
 	r := NewRegistry()
 	r.Now = func() time.Time { return now }
 	r.BanDuration = func(string) time.Duration { return 10 * time.Minute }
 
-	for _, name := range []string{"p1", "p2"} {
-		r.Observe(sample("example.com", name, 10*time.Millisecond, 10*time.Millisecond, 1000, 403, nil))
-	}
-	if got := r.Select("example.com", candidates(t, pool)); got != nil {
-		t.Errorf("при всех забаненных ожидался nil, получен %s", got.Name)
+	block(r, sample("example.com", "p1", 10*time.Millisecond, 10*time.Millisecond, 1000, 403, nil))
+	now = now.Add(time.Minute) // p2 забанен позже — и выйдет из бана позже
+	block(r, sample("example.com", "p2", 10*time.Millisecond, 10*time.Millisecond, 1000, 403, nil))
+
+	for i := 0; i < 20; i++ {
+		got := r.Select("example.com", candidates(t, pool))
+		if got == nil || got.Name != "p1" {
+			t.Fatalf("при всех забаненных ожидался p1 (бан кончается раньше), получен %v", got)
+		}
 	}
 }
 
@@ -366,19 +389,25 @@ func TestBanIsAppliedThroughPool(t *testing.T) {
 	r.BanDuration = func(string) time.Duration { return 10 * time.Minute }
 	pool.Select = r.Select
 
-	// Оба прокси получают 403 — домен остаётся без живых прокси.
-	for _, name := range []string{"p1", "p2"} {
-		r.Observe(sample("example.com", name, 10*time.Millisecond, 10*time.Millisecond, 1000, 403, nil))
-	}
-	if _, err := pool.Acquire("example.com"); err == nil {
-		t.Fatal("ожидался отказ: все прокси домена забанены")
+	// p1 забанен — пул раз за разом выдаёт p2.
+	block(r, sample("example.com", "p1", 10*time.Millisecond, 10*time.Millisecond, 1000, 403, nil))
+	for i := 0; i < 20; i++ {
+		lease, err := pool.Acquire("example.com")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if lease.Proxy.Name != "p1" {
+			lease.Release()
+			continue
+		}
+		t.Fatal("пул выдал забаненный прокси, хотя есть живой")
 	}
 
-	// После истечения бана домен снова обслуживается.
-	r.Now = func() time.Time { return now.Add(11 * time.Minute) }
+	// Забанены оба — домен всё равно обслуживается, а не отдаёт 503.
+	block(r, sample("example.com", "p2", 10*time.Millisecond, 10*time.Millisecond, 1000, 403, nil))
 	lease, err := pool.Acquire("example.com")
 	if err != nil {
-		t.Fatalf("после истечения бана ожидался успех: %v", err)
+		t.Fatalf("при всех забаненных ожидался запасной прокси: %v", err)
 	}
 	lease.Release()
 }
@@ -396,7 +425,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		src.Observe(sample("example.com", "fast", 10*time.Millisecond, 20*time.Millisecond, 200_000, 200, nil))
 		src.Observe(sample("example.com", "slow", 300*time.Millisecond, 400*time.Millisecond, 200_000, 200, nil))
 	}
-	src.Observe(sample("shop.example.com", "fast", 10*time.Millisecond, 10*time.Millisecond, 1000, 429, nil))
+	block(src, sample("shop.example.com", "fast", 10*time.Millisecond, 10*time.Millisecond, 1000, 429, nil))
 
 	if err := src.Save(path); err != nil {
 		t.Fatal(err)
@@ -515,7 +544,7 @@ func TestEvictForgetsIdlePairsButKeepsBans(t *testing.T) {
 	r.BanDuration = func(string) time.Duration { return 48 * time.Hour }
 
 	r.Observe(sample("old.example.com", "p1", 10*time.Millisecond, 20*time.Millisecond, 1000, 200, nil))
-	r.Observe(sample("old.example.com", "p2", 10*time.Millisecond, 20*time.Millisecond, 1000, 403, nil))
+	block(r, sample("old.example.com", "p2", 10*time.Millisecond, 20*time.Millisecond, 1000, 403, nil))
 	// Пара, заведённая выбором без единого замера, тоже считается свежей.
 	r.Stats("old.example.com", "p3")
 
@@ -664,5 +693,63 @@ func TestRekeyMovesLegacyNames(t *testing.T) {
 	a := r.Snapshot("a.com")
 	if _, ok := a.Proxies["p2"]; ok || a.Proxies["id-2"].Requests != 2 {
 		t.Errorf("свежая статистика по id перезаписана старой: %+v", a.Proxies)
+	}
+}
+
+// TestSingleBlockDoesNotBan — одиночный 403 часто относится к конкретному
+// адресу, а не к прокси. Бан — только за серию подряд, любой нормальный
+// ответ её обнуляет.
+func TestSingleBlockDoesNotBan(t *testing.T) {
+	now := time.Now()
+	r := NewRegistry()
+	r.Now = func() time.Time { return now }
+	r.BanDuration = func(string) time.Duration { return time.Minute }
+
+	forbidden := sample("example.com", "p", 10*time.Millisecond, 10*time.Millisecond, 1000, 403, nil)
+	ok := sample("example.com", "p", 10*time.Millisecond, 10*time.Millisecond, 1000, 200, nil)
+	for i := 0; i < 20; i++ {
+		for j := 0; j < blocksBeforeBan-1; j++ {
+			r.Observe(forbidden)
+		}
+		r.Observe(ok)
+	}
+	if isBanned, _, _ := r.Stats("example.com", "p").Banned(now); isBanned {
+		t.Error("403 вперемешку с нормальными ответами не должны давать бан")
+	}
+}
+
+// TestProxyAuthRejectBansAtOnce — 407 говорит о самом прокси (неверный
+// логин или пароль), ждать серии незачем.
+func TestProxyAuthRejectBansAtOnce(t *testing.T) {
+	now := time.Now()
+	r := NewRegistry()
+	r.Now = func() time.Time { return now }
+	r.BanDuration = func(string) time.Duration { return time.Minute }
+
+	r.Observe(sample("example.com", "p", 10*time.Millisecond, 10*time.Millisecond, 100, 407, nil))
+	if isBanned, _, _ := r.Stats("example.com", "p").Banned(now); !isBanned {
+		t.Error("407 должен банить сразу")
+	}
+}
+
+// TestClientGoneIsIgnored — клиент ушёл сам (закрыл вкладку, ушёл со
+// страницы). Прокси тут ни при чём: серия таких обрывов не должна его банить.
+func TestClientGoneIsIgnored(t *testing.T) {
+	now := time.Now()
+	r := NewRegistry()
+	r.Now = func() time.Time { return now }
+	r.BanDuration = func(string) time.Duration { return time.Minute }
+
+	gone := sample("example.com", "p", 10*time.Millisecond, 10*time.Millisecond, 5000, 200, errors.New("context canceled"))
+	gone.ClientGone = true
+	for i := 0; i < failsBeforeBan*3; i++ {
+		r.Observe(gone)
+	}
+	snap := r.Stats("example.com", "p").Snapshot()
+	if snap.Errors != 0 || snap.Requests != 0 {
+		t.Errorf("обрыв клиента попал в статистику: %+v", snap)
+	}
+	if isBanned, _, _ := r.Stats("example.com", "p").Banned(now); isBanned {
+		t.Error("обрывы со стороны клиента забанили прокси")
 	}
 }

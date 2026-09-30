@@ -316,6 +316,17 @@ func (s *Server) domain(w http.ResponseWriter, r *http.Request) {
 		weights[id] = wgt
 		weightSum += wgt
 	}
+	// Забанены все — Select отдаёт весь трафик тому, чей бан кончится
+	// раньше; таблица должна показывать то же.
+	fallback := ""
+	if alive == 0 {
+		var soonest time.Time
+		for id, st := range snap.Proxies {
+			if fallback == "" || st.BannedUntil.Before(soonest) {
+				fallback, soonest = id, st.BannedUntil
+			}
+		}
+	}
 
 	for id, st := range snap.Proxies {
 		name, ok := names[id]
@@ -342,6 +353,9 @@ func (s *Server) domain(w http.ResponseWriter, r *http.Request) {
 		case now.Before(st.BannedUntil):
 			row.Banned = true
 			row.Status = "banned"
+			if id == fallback {
+				row.Share = 1
+			}
 		case probing > 0:
 			// Следующий запрос уйдёт одному из непроверенных — ровно так
 			// делает Select, остальным в этот момент не достаётся ничего.

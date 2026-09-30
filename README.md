@@ -161,10 +161,14 @@ be no way to learn that an outsider has recovered.
 
 **A slow proxy stays in rotation with a low weight. A banned one is switched
 off entirely, but only for the domain where it was banned.** Ban signals:
-HTTP 403, 429, 451, 407, three consecutive connection failures, or a captcha /
+three HTTP 403, 429 or 451 in a row (a single 403 is often about one URL, not
+the proxy), an HTTP 407, three consecutive connection failures, or a captcha /
 challenge page instead of content (MITM mode). A proxy that accepts the
 connection and then never delivers a byte from the target counts as a
 connection failure too: the target has to answer within the dial timeout.
+A request the client itself abandoned (closed tab, navigated away) does not
+count against the proxy. If every proxy of a list is banned for a domain,
+requests go through the one whose ban ends first instead of getting a 503.
 
 **A request that got no reply through one proxy is retried through another**,
 up to three proxies in total, and the client does not notice. For tunnels

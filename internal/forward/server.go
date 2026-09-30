@@ -129,6 +129,13 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		sample.Duration = time.Since(started)
+		if r.Context().Err() != nil {
+			// Клиент не дождался подключения — прокси не виноват, и
+			// отвечать уже некому.
+			sample.ClientGone = true
+			s.observe(sample)
+			return
+		}
 		s.observe(sample)
 		var next *Route
 		next, err = s.nextRoute(domain, route, &avoid)
@@ -331,6 +338,13 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		sample.Duration = time.Since(started)
+		if r.Context().Err() != nil {
+			// Клиент ушёл, не дождавшись ответа: запрос отменён с нашей
+			// стороны, прокси тут ни при чём.
+			sample.ClientGone = true
+			s.observe(sample)
+			return
+		}
 		s.observe(sample)
 		if r.Body != http.NoBody {
 			http.Error(w, i18n.T("upstream unavailable: ")+err.Error(), http.StatusBadGateway)
@@ -356,8 +370,12 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	removeHopByHop(respHeader)
 	w.WriteHeader(resp.StatusCode)
 	counted := &countingReader{r: resp.Body}
-	if _, err := io.Copy(w, counted); err != nil && !errors.Is(err, io.EOF) {
+	out := &clientWriter{w: w}
+	if _, err := io.Copy(out, counted); err != nil && !errors.Is(err, io.EOF) {
 		sample.Err = err
+		// Ушедший клиент рвёт и запись к себе, и чтение от апстрима: запрос
+		// к апстриму идёт в контексте клиентского и отменяется вместе с ним.
+		sample.ClientGone = out.err != nil || r.Context().Err() != nil
 	}
 	sample.Bytes = counted.n
 	sample.Duration = time.Since(started)

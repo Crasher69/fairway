@@ -596,3 +596,24 @@ func TestMITMDoesNotRetryAfterTargetAnswered(t *testing.T) {
 		t.Errorf("маршрут выбирался %d раз: после ответа цели смены прокси быть не должно", got)
 	}
 }
+
+// TestMITMClientAbortIsNotProxyFailure — то же для расшифровки: клиент
+// ушёл посреди ответа, прокси ни при чём.
+func TestMITMClientAbortIsNotProxyFailure(t *testing.T) {
+	h := newMITMHarness(t, slowBody)
+
+	resp, err := h.client.Get(h.target.URL + "/big")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(resp.Body, make([]byte, 64<<10)); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close() // тело не дочитано — транспорт рвёт соединение
+	h.client.CloseIdleConnections()
+
+	s := h.waitSamples(t, 1)[0]
+	if !s.ClientGone {
+		t.Errorf("обрыв со стороны клиента не отмечен: status=%d err=%v", s.Status, s.Err)
+	}
+}
