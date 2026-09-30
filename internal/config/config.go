@@ -3,6 +3,7 @@
 package config
 
 import (
+	"crypto/rand"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -34,6 +35,11 @@ type Config struct {
 	Proxies   []Proxy   `json:"proxies"`
 	Lists     []List    `json:"lists"`
 	Domains   []Domain  `json:"domains"`
+
+	// migrated — Validate дописал прокси id или перевёл ссылки листов
+	// с имён на id. Load по нему сохраняет файл обратно, чтобы id не
+	// выдумывались заново при каждом чтении.
+	migrated bool
 }
 
 // ProxyAuth — проверка клиентов прокси по заголовку Proxy-Authorization
@@ -112,6 +118,10 @@ type Defaults struct {
 // прокси обычно и продают — «ip:port:логин:пароль». Строку целиком тоже можно
 // вставить в URL: при загрузке она разбирается на поля и из файла исчезает.
 type Proxy struct {
+	// ID — постоянный идентификатор (UUID), по нему прокси состоит в листах.
+	// Имя можно менять как угодно, привязки от этого не страдают. Прокси без
+	// id получает его при загрузке конфига.
+	ID   string `json:"id"`
 	Name string `json:"name"`
 	// Scheme — http, https или socks5. Пусто означает http.
 	Scheme   string `json:"scheme,omitempty"`
@@ -178,9 +188,35 @@ func (p Proxy) ConnectURL() string {
 
 // List — именованный набор прокси.
 type List struct {
-	Name    string   `json:"name"`
+	Name string `json:"name"`
+	// Proxies — id прокси. Имена здесь тоже понимаются (так были устроены
+	// конфиги до появления id): при загрузке они заменяются на id.
 	Proxies []string `json:"proxies"`
 }
+
+// NewID выдаёт случайный UUID версии 4.
+func NewID() string {
+	var b [16]byte
+	rand.Read(b[:]) // с Go 1.24 не возвращает ошибку
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// ProxyByID ищет прокси по id.
+func (c *Config) ProxyByID(id string) (Proxy, bool) {
+	for _, p := range c.Proxies {
+		if p.ID == id {
+			return p, true
+		}
+	}
+	return Proxy{}, false
+}
+
+// Migrated сообщает, что при проверке конфиг был дополнен: прокси получили
+// id или ссылки листов переведены с имён на id. Такой конфиг стоит
+// сохранить, иначе id будут другими при следующем чтении файла.
+func (c *Config) Migrated() bool { return c.migrated }
 
 // Domain — правило для домена: какой лист использовать и как ротировать.
 type Domain struct {
@@ -236,13 +272,23 @@ func (c *Config) Lang() i18n.Lang {
 	return l
 }
 
-// Load читает и проверяет конфиг.
+// Load читает и проверяет конфиг. Если пришлось выдать прокси id или
+// перевести листы с имён на id, файл тут же перезаписывается: иначе при
+// каждом чтении id были бы новыми. Не вышло записать (файл только для
+// чтения) — не беда, конфиг всё равно рабочий.
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return Parse(raw)
+	cfg, err := Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.migrated {
+		_ = cfg.Save(path)
+	}
+	return cfg, nil
 }
 
 // Parse разбирает и проверяет конфиг из памяти.
@@ -268,15 +314,25 @@ func (c *Config) Validate() error {
 	if err := c.ProxyAuth.validate(); err != nil {
 		return err
 	}
-	proxyNames := make(map[string]bool, len(c.Proxies))
+	proxyNames := make(map[string]string, len(c.Proxies)) // имя -> id
+	proxyIDs := make(map[string]bool, len(c.Proxies))
 	for i := range c.Proxies {
 		p := &c.Proxies[i]
 		switch {
 		case p.Name == "":
 			return i18n.Errorf("proxies[%d]: empty name", i)
-		case proxyNames[p.Name]:
+		case proxyNames[p.Name] != "":
 			return i18n.Errorf("proxies[%d]: name %q is already taken", i, p.Name)
 		}
+		if p.ID == "" {
+			p.ID = NewID()
+			c.migrated = true
+		}
+		if proxyIDs[p.ID] {
+			// Так бывает, когда прокси копируют в файле целиком вместе с id.
+			return i18n.Errorf("proxies[%d] (%s): id %q is already taken", i, p.Name, p.ID)
+		}
+		proxyIDs[p.ID] = true
 		// Разбираем здесь, а не при загрузке: так одна форма приходит и из
 		// файла, и из панели, и проверяется одинаково.
 		if err := p.Normalize(); err != nil {
@@ -293,7 +349,7 @@ func (c *Config) Validate() error {
 		if _, err := forward.ParseUpstream(p.ConnectURL()); err != nil {
 			return fmt.Errorf("proxies[%d] (%s): %w", i, p.Name, err)
 		}
-		proxyNames[p.Name] = true
+		proxyNames[p.Name] = p.ID
 	}
 
 	listNames := make(map[string]bool, len(c.Lists))
@@ -306,10 +362,17 @@ func (c *Config) Validate() error {
 		case len(l.Proxies) == 0:
 			return i18n.Errorf("lists[%d] (%s): empty list", i, l.Name)
 		}
-		for _, ref := range l.Proxies {
-			if !proxyNames[ref] {
-				return i18n.Errorf("lists[%d] (%s): no proxy named %q", i, l.Name, ref)
+		for j, ref := range l.Proxies {
+			if proxyIDs[ref] {
+				continue
 			}
+			// Старая привязка по имени: переводим на id, не теряя её.
+			id, ok := proxyNames[ref]
+			if !ok {
+				return i18n.Errorf("lists[%d] (%s): no proxy with id or name %q", i, l.Name, ref)
+			}
+			c.Lists[i].Proxies[j] = id
+			c.migrated = true
 		}
 		listNames[l.Name] = true
 	}

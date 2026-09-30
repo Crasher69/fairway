@@ -22,13 +22,20 @@ var (
 	ErrNoProxy = errors.New("no free proxy")
 )
 
-// Proxy — прокси с живым состоянием. Объект переживает перезагрузку конфига:
-// пул сопоставляет прокси по имени, чтобы не потерять счётчики и (позже) рейтинг.
+// Proxy — прокси с живым состоянием. Состояние переживает перезагрузку
+// конфига: пул сопоставляет прокси по id, так что ни переименование, ни
+// смена адреса не обнуляют счётчики. Рейтинг тоже копится по id.
 type Proxy struct {
+	// ID — постоянный ключ прокси (config.Proxy.ID).
+	ID       string
 	Name     string
 	Upstream *forward.Upstream
 
-	active atomic.Int64 // соединений прямо сейчас, по всем доменам
+	// active — соединений прямо сейчас, по всем доменам. Указатель, потому
+	// что при переименовании прокси получает новый объект (имя читают без
+	// блокировок), а счётчик должен остаться тем же: его ещё уменьшат
+	// аренды, выданные под старым именем.
+	active *atomic.Int64
 }
 
 // Active — сколько соединений держит прокси прямо сейчас.
@@ -71,17 +78,18 @@ func New(cfg *config.Config) (*Pool, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.direct = &Proxy{Name: "direct", Upstream: direct}
+	p.direct = &Proxy{ID: "direct", Name: "direct", Upstream: direct, active: new(atomic.Int64)}
 	if err := p.Apply(cfg); err != nil {
 		return nil, err
 	}
 	return p, nil
 }
 
-// Apply заменяет конфигурацию пула на лету. Прокси с теми же именами
-// сохраняют состояние — активные соединения не теряются при hot-reload.
+// Apply заменяет конфигурацию пула на лету. Прокси с тем же id сохраняют
+// состояние — активные соединения не теряются при hot-reload, даже если
+// прокси переименовали или сменили ему адрес.
 func (p *Pool) Apply(cfg *config.Config) error {
-	proxies := make(map[string]*Proxy, len(cfg.Proxies))
+	proxies := make(map[string]*Proxy, len(cfg.Proxies)) // id -> прокси
 
 	p.mu.RLock()
 	previous := p.proxies
@@ -92,11 +100,22 @@ func (p *Pool) Apply(cfg *config.Config) error {
 		if err != nil {
 			return i18n.Errorf("proxy %s: %w", pc.Name, err)
 		}
-		if old, ok := previous[pc.Name]; ok && old.Upstream.Name == up.Name {
-			proxies[pc.Name] = old // тот же прокси — сохраняем счётчики
-			continue
+		old, known := previous[pc.ID]
+		switch {
+		case !known:
+			proxies[pc.ID] = &Proxy{ID: pc.ID, Name: pc.Name, Upstream: up, active: new(atomic.Int64)}
+		case old.Name == pc.Name && old.Upstream.Name == up.Name:
+			proxies[pc.ID] = old // ничего не поменялось
+		default:
+			// Тот же прокси под новым именем или с новым адресом: счётчик
+			// общий, а соединения к прежнему адресу остаются в старом
+			// апстриме, если адрес не менялся.
+			next := &Proxy{ID: pc.ID, Name: pc.Name, Upstream: up, active: old.active}
+			if old.Upstream.Name == up.Name {
+				next.Upstream = old.Upstream
+			}
+			proxies[pc.ID] = next
 		}
-		proxies[pc.Name] = &Proxy{Name: pc.Name, Upstream: up}
 	}
 
 	lists := make(map[string][]*Proxy, len(cfg.Lists))
@@ -121,8 +140,8 @@ func (p *Pool) Apply(cfg *config.Config) error {
 
 	// Выбывшие апстримы закрывают простаивающие соединения пула: иначе они
 	// висели бы до таймаута, а прокси уже вычеркнут из конфига.
-	for name, old := range previous {
-		if proxies[name] != old {
+	for id, old := range previous {
+		if next, ok := proxies[id]; !ok || next.Upstream != old.Upstream {
 			old.Upstream.CloseIdle()
 		}
 	}
@@ -147,13 +166,13 @@ func (l *Lease) Release() {
 	}
 	l.Proxy.active.Add(-1)
 	if st, ok := l.pool.states.Load(l.domain); ok {
-		st.(*domainState).release(l.Proxy.Name)
+		st.(*domainState).release(l.Proxy.ID)
 	}
 }
 
 // Acquire подбирает прокси для домена и занимает под него слот.
 //
-// avoid — имена прокси, которые брать нельзя: через них этот же запрос
+// avoid — id прокси, которые брать нельзя: через них этот же запрос
 // уже не прошёл, и повторять его туда же бессмысленно. Если кроме них
 // никого не осталось, возвращается ErrNoProxy — лучше честный отказ,
 // чем третья попытка через заведомо мёртвый прокси.
@@ -213,8 +232,7 @@ func (p *Pool) Proxies() []*Proxy {
 	return out
 }
 
-// Rule возвращает правило, под которое попадает домен.
-// InFlight — сколько соединений каждый прокси держит на этом домене прямо
+// InFlight — сколько соединений каждый прокси (по id) держит на этом домене прямо
 // сейчас. Для панели: доля трафика считается так же, как в Select, а тому
 // важно, висит ли что-то на непроверенном прокси.
 func (p *Pool) InFlight(domain string) map[string]int {
@@ -225,6 +243,7 @@ func (p *Pool) InFlight(domain string) map[string]int {
 	return st.(*domainState).snapshot()
 }
 
+// Rule возвращает правило, под которое попадает домен.
 func (p *Pool) Rule(domain string) (Rule, bool) {
 	p.mu.RLock()
 	rules := p.rules

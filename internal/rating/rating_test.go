@@ -213,7 +213,9 @@ func poolWith(t *testing.T, names ...string) *proxypool.Pool {
 		Domains: []config.Domain{{Pattern: "example.com", List: "main"}},
 	}
 	for _, n := range names {
-		cfg.Proxies = append(cfg.Proxies, config.Proxy{Name: n, URL: "http://" + n + ".test:8080"})
+		// id совпадает с именем: замеры в тестах подписаны именем, а
+		// рейтинг без ProxyID берёт ключом его.
+		cfg.Proxies = append(cfg.Proxies, config.Proxy{ID: n, Name: n, URL: "http://" + n + ".test:8080"})
 		cfg.Lists[0].Proxies = append(cfg.Lists[0].Proxies, n)
 	}
 	if err := cfg.Validate(); err != nil {
@@ -616,5 +618,51 @@ func TestRetainForgetsRemovedProxies(t *testing.T) {
 	// начинает с чистого листа, как новый.
 	if banned, _, _ := r.Stats("example.com", "gone").Banned(time.Now()); banned {
 		t.Error("бан удалённого прокси пережил удаление")
+	}
+}
+
+// TestObserveKeysByProxyID — рейтинг копится по id прокси, а не по имени:
+// переименованный прокси продолжает со своими замерами.
+func TestObserveKeysByProxyID(t *testing.T) {
+	r := NewRegistry()
+	for _, name := range []string{"old-name", "new-name"} {
+		s := sample("example.com", name, 10*time.Millisecond, 10*time.Millisecond, 100_000, 200, nil)
+		s.ProxyID = "id-1"
+		r.Observe(s)
+	}
+	snap := r.Snapshot("example.com")
+	if len(snap.Proxies) != 1 || snap.Proxies["id-1"].Requests != 2 {
+		t.Errorf("замеры не сошлись на id: %+v", snap.Proxies)
+	}
+}
+
+// TestRekeyMovesLegacyNames — рейтинги прежних версий лежат по именам и
+// переезжают на id, а не пропадают.
+func TestRekeyMovesLegacyNames(t *testing.T) {
+	r := NewRegistry()
+	r.Observe(sample("a.com", "p1", 10*time.Millisecond, 10*time.Millisecond, 100_000, 200, nil))
+	r.Observe(sample("b.com", "p1", 10*time.Millisecond, 10*time.Millisecond, 100_000, 200, nil))
+	r.Observe(sample("a.com", "p2", 10*time.Millisecond, 10*time.Millisecond, 100_000, 200, nil))
+	// По p2 уже есть свежая статистика под id — она важнее старой.
+	fresh := sample("a.com", "p2", 10*time.Millisecond, 10*time.Millisecond, 100_000, 200, nil)
+	fresh.ProxyID = "id-2"
+	r.Observe(fresh)
+	r.Observe(fresh)
+
+	if moved := r.Rekey(map[string]string{"p1": "id-1", "p2": "id-2"}); moved != 2 {
+		t.Errorf("перенесено %d пар, ожидалось 2", moved)
+	}
+	for _, domain := range []string{"a.com", "b.com"} {
+		snap := r.Snapshot(domain)
+		if _, ok := snap.Proxies["p1"]; ok {
+			t.Errorf("%s: запись по имени осталась", domain)
+		}
+		if snap.Proxies["id-1"].Requests != 1 {
+			t.Errorf("%s: рейтинг p1 не переехал на id: %+v", domain, snap.Proxies)
+		}
+	}
+	a := r.Snapshot("a.com")
+	if _, ok := a.Proxies["p2"]; ok || a.Proxies["id-2"].Requests != 2 {
+		t.Errorf("свежая статистика по id перезаписана старой: %+v", a.Proxies)
 	}
 }

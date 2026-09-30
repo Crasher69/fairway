@@ -143,6 +143,7 @@ func (c *Config) ImportProxies(text, scheme, prefix, country, comment string) Im
 				break
 			}
 		}
+		proxy.ID = NewID()
 		proxy.Country = country
 		proxy.Comment = comment
 

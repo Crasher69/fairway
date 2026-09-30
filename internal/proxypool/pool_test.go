@@ -20,9 +20,9 @@ func mustConfig(t *testing.T, raw string) *config.Config {
 const threeProxies = `{
   "defaults": {"list": "", "allow_direct": false, "ban_duration": "5m"},
   "proxies": [
-    {"name": "a", "url": "http://1.1.1.1:8080"},
-    {"name": "b", "url": "http://2.2.2.2:8080"},
-    {"name": "c", "url": "http://3.3.3.3:8080"}
+    {"id": "id-a", "name": "a", "url": "http://1.1.1.1:8080"},
+    {"id": "id-b", "name": "b", "url": "http://2.2.2.2:8080"},
+    {"id": "id-c", "name": "c", "url": "http://3.3.3.3:8080"}
   ],
   "lists": [{"name": "main", "proxies": ["a", "b", "c"]}],
   "domains": [{"pattern": "example.com", "list": "main"}]
@@ -239,9 +239,9 @@ func TestApplyKeepsLiveProxies(t *testing.T) {
 
 	updated := mustConfig(t, `{
 	  "proxies": [
-	    {"name": "a", "url": "http://1.1.1.1:8080"},
-	    {"name": "b", "url": "http://9.9.9.9:8080"},
-	    {"name": "c", "url": "http://3.3.3.3:8080"}
+	    {"id": "id-a", "name": "a", "url": "http://1.1.1.1:8080"},
+	    {"id": "id-b", "name": "b", "url": "http://9.9.9.9:8080"},
+	    {"id": "id-c", "name": "c", "url": "http://3.3.3.3:8080"}
 	  ],
 	  "lists": [{"name": "main", "proxies": ["a", "b", "c"]}],
 	  "domains": [{"pattern": "example.com", "list": "main"}]
@@ -276,7 +276,7 @@ func TestAcquireAvoidsFailedProxies(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 20; i++ {
-		lease, err := pool.Acquire("example.com", "a", "b")
+		lease, err := pool.Acquire("example.com", "id-a", "id-b")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -285,7 +285,7 @@ func TestAcquireAvoidsFailedProxies(t *testing.T) {
 		}
 		lease.Release()
 	}
-	if _, err := pool.Acquire("example.com", "a", "b", "c"); !errors.Is(err, ErrNoProxy) {
+	if _, err := pool.Acquire("example.com", "id-a", "id-b", "id-c"); !errors.Is(err, ErrNoProxy) {
 		t.Errorf("все провалились — ожидался ErrNoProxy, получено %v", err)
 	}
 }
@@ -317,7 +317,58 @@ func TestCandidatesCarryInFlight(t *testing.T) {
 	if seen["a"] != 1 || seen["b"] != 0 {
 		t.Errorf("ожидалось a:1, b:0, получено %v", seen)
 	}
-	if got := pool.InFlight("example.com"); got["a"] != 2 {
+	if got := pool.InFlight("example.com"); got["id-a"] != 2 {
 		t.Errorf("InFlight после двух захватов a: %v", got)
+	}
+}
+
+// TestRenameKeepsCounters — прокси сопоставляются по id: переименование
+// не обнуляет счётчик соединений и не выкидывает прокси из листа.
+func TestRenameKeepsCounters(t *testing.T) {
+	pool, err := New(mustConfig(t, threeProxies))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.Select = func(_ string, cs []Candidate) *Proxy { return cs[0].Proxy }
+	lease, err := pool.Acquire("example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	renamed := mustConfig(t, `{
+	  "proxies": [
+	    {"id": "id-a", "name": "a-renamed", "url": "http://1.1.1.1:8080"},
+	    {"id": "id-b", "name": "b", "url": "http://2.2.2.2:8080"}
+	  ],
+	  "lists": [{"name": "main", "proxies": ["id-a", "id-b"]}],
+	  "domains": [{"pattern": "example.com", "list": "main"}]
+	}`)
+	if err := pool.Apply(renamed); err != nil {
+		t.Fatal(err)
+	}
+
+	var a *Proxy
+	for _, p := range pool.Proxies() {
+		if p.ID == "id-a" {
+			a = p
+		}
+	}
+	if a == nil || a.Name != "a-renamed" {
+		t.Fatalf("прокси id-a после переименования: %+v", a)
+	}
+	if a.Active() != 1 {
+		t.Errorf("счётчик после переименования: %d, ожидалась 1", a.Active())
+	}
+	if a.Upstream != lease.Proxy.Upstream {
+		t.Error("адрес не менялся, а апстрим пересоздан")
+	}
+	if got := pool.InFlight("example.com"); got["id-a"] != 1 {
+		t.Errorf("InFlight после переименования: %v", got)
+	}
+
+	// Аренда, выданная под старым именем, возвращается в тот же счётчик.
+	lease.Release()
+	if a.Active() != 0 {
+		t.Errorf("после Release у переименованного осталось %d активных", a.Active())
 	}
 }

@@ -12,7 +12,7 @@ type domainState struct {
 	domain string
 
 	mu     sync.Mutex
-	active map[string]int // имя прокси -> активных соединений на этом домене
+	active map[string]int // id прокси -> активных соединений на этом домене
 	rr     uint64         // курсор round-robin, пока нет рейтинга
 }
 
@@ -28,16 +28,16 @@ func (s *domainState) pick(members []*Proxy, rule Rule, sel Selector, avoid []st
 	candidates := make([]Candidate, 0, len(members))
 	inUse := 0
 	for _, m := range members {
-		if s.active[m.Name] > 0 {
+		if s.active[m.ID] > 0 {
 			inUse++
 		}
 		if rule.MaxConnsPerProxy > 0 && int(m.Active()) >= rule.MaxConnsPerProxy {
 			continue
 		}
-		if slices.Contains(avoid, m.Name) {
+		if slices.Contains(avoid, m.ID) {
 			continue
 		}
-		candidates = append(candidates, Candidate{Proxy: m, InFlight: s.active[m.Name]})
+		candidates = append(candidates, Candidate{Proxy: m, InFlight: s.active[m.ID]})
 	}
 
 	// Рабочий набор набран — новые прокси в ротацию не пускаем,
@@ -68,18 +68,18 @@ func (s *domainState) pick(members []*Proxy, rule Rule, sel Selector, avoid []st
 		return nil
 	}
 
-	s.active[chosen.Name]++
+	s.active[chosen.ID]++
 	return chosen
 }
 
-func (s *domainState) release(name string) {
+func (s *domainState) release(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.active[name] <= 1 {
-		delete(s.active, name) // не копим мёртвые ключи по редким прокси
+	if s.active[id] <= 1 {
+		delete(s.active, id) // не копим мёртвые ключи по редким прокси
 		return
 	}
-	s.active[name]--
+	s.active[id]--
 }
 
 // snapshot — активные соединения по прокси на этом домене (для админки).
