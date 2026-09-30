@@ -355,11 +355,11 @@ func TestStaticIsServed(t *testing.T) {
 
 func TestIsLoopback(t *testing.T) {
 	tests := map[string]bool{
-		"127.0.0.1:8081": true,
-		"localhost:8081": true,
-		"[::1]:8081":     true,
-		"0.0.0.0:8081":   false,
-		":8081":          false,
+		"127.0.0.1:7771": true,
+		"localhost:7771": true,
+		"[::1]:7771":     true,
+		"0.0.0.0:7771":   false,
+		":7771":          false,
 		"192.168.1.5:80": false,
 	}
 	for addr, want := range tests {

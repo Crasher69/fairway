@@ -22,7 +22,7 @@ import (
 
 func main() {
 	var (
-		proxyAddr   = flag.String("proxy", "127.0.0.1:8080", "address of the proxy under test")
+		proxyAddr   = flag.String("proxy", "127.0.0.1:7770", "address of the proxy under test")
 		target      = flag.String("target", "http://127.0.0.1:19000/", "target URL")
 		concurrency = flag.Int("c", 100, "how many connections to keep open at once")
 		duration    = flag.Duration("d", 15*time.Second, "test duration")
