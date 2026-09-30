@@ -89,12 +89,15 @@ func (h *Hooks) Matches(domain string) bool {
 
 // Manifest — описание плагина из manifest.json.
 type Manifest struct {
-	Name        string       `json:"name"`
-	Version     string       `json:"version"`
-	Title       string       `json:"title,omitempty"`
-	Description string       `json:"description,omitempty"`
-	Kind        Kind         `json:"kind"`
-	Permissions []Permission `json:"permissions,omitempty"`
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	// I18n — название и описание на других языках, ключ — код языка
+	// панели ("ru"). Чего нет, панель берёт из Title и Description.
+	I18n        map[string]Text `json:"i18n,omitempty"`
+	Kind        Kind            `json:"kind"`
+	Permissions []Permission    `json:"permissions,omitempty"`
 	// HTTPHosts — куда плагину можно ходить с http.fetch: "api.example.com"
 	// или "*.example.com" (поддомены, но не сам example.com).
 	HTTPHosts []string `json:"http_hosts,omitempty"`
@@ -103,6 +106,12 @@ type Manifest struct {
 	SettingsSchema json.RawMessage `json:"settings_schema,omitempty"`
 	// Hooks — обработка запросов; есть только у плагина вида hook.
 	Hooks *Hooks `json:"hooks,omitempty"`
+}
+
+// Text — название и описание плагина на одном языке.
+type Text struct {
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)

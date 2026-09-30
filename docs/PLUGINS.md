@@ -88,6 +88,7 @@ fairway.theme  // "light" или "dark"; тот же color-scheme уже сто�
   "version": "0.1.0",
   "title": "Hello",
   "description": "Что делает плагин",
+  "i18n": {"ru": {"title": "Привет", "description": "Что делает плагин"}},
   "kind": "base",
   "permissions": ["config.read", "schedule", "http.fetch"],
   "http_hosts": ["api.example.com", "*.example.net"],
@@ -101,6 +102,11 @@ fairway.theme  // "light" или "dark"; тот же color-scheme уже сто�
   тоже запрещены.
 - `settings_schema` — JSON Schema настроек; по ней панель рисует
   форму.
+- `i18n` — `title` и `description` на других языках, ключ — язык панели
+  (`en`, `ru`). Панель показывает их при этом языке, а чего нет — берёт
+  `title` и `description` из манифеста. Так же `i18n` можно добавить полю
+  в `settings_schema.properties`:
+  `"list": {"type": "string", "title": "List", "i18n": {"ru": {"title": "Лист"}}}`.
 
 ## Права
 

@@ -1,6 +1,8 @@
 package plugin
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"fairway/internal/config"
@@ -78,5 +80,24 @@ func TestConfigEditSameAs(t *testing.T) {
 	}
 	if (configEdit{Proxies: &other}).sameAs(view) {
 		t.Fatal("изменение не замечено")
+	}
+}
+
+func TestManifestI18n(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "hello")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := `{"name":"hello","version":"1","kind":"base","title":"Hello",
+		"i18n":{"ru":{"title":"Привет","description":"Описание"}}}`
+	if err := os.WriteFile(filepath.Join(dir, ManifestFile), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.I18n["ru"]; got != (Text{Title: "Привет", Description: "Описание"}) {
+		t.Fatalf("i18n ru = %+v", got)
 	}
 }
