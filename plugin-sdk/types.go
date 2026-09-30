@@ -177,6 +177,9 @@ type Request struct {
 	Body    []byte              `json:"body,omitempty"`
 	// Timeout — 0 означает таймаут хоста по умолчанию (30 с).
 	Timeout time.Duration `json:"-"`
+	// ViaFairway — отправить запрос через прокси самого fairway: он
+	// получит лист по правилу своего домена, как любой клиент.
+	ViaFairway bool `json:"via_fairway,omitempty"`
 }
 
 // Response — ответ на Fetch.

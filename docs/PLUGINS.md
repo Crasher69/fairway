@@ -110,7 +110,7 @@ fairway.theme  // "light" или "dark"; тот же color-scheme уже сто�
 | `config.write` | заменять разделы `proxies`, `lists`, `domains`. Правка проходит ту же проверку, что правка из панели: битый конфиг не сохранится |
 | `events` | получать события: `config.applied`, `proxy.banned` |
 | `schedule` | вызываться по таймеру, не чаще раза в 10 секунд |
-| `http.fetch` | HTTP-запросы на хосты из `http_hosts`, ответ до 16 МиБ |
+| `http.fetch` | HTTP-запросы на хосты из `http_hosts`, ответ до 16 МиБ; напрямую или через прокси самого fairway (`via_fairway`) |
 | `requests` | видеть и менять запросы к доменам из `hooks.domains`. Только для вида `hook` и обязательно для него |
 
 ## Ограничения
@@ -240,6 +240,27 @@ GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o plugin.wasm .
 
 В режиме reactor `main` не вызывается — плагин регистрируется в `init`.
 
+### Запросы через свои прокси
+
+По умолчанию `http.fetch` ходит в сеть напрямую, с IP машины. С
+`ViaFairway: true` (`"via_fairway": true` в ABI) запрос уходит на прокси
+самого fairway и дальше идёт как запрос любого клиента: лист выбирается по
+правилу домена, работают рейтинг и баны. Так плагин ходит в API
+поставщика через купленные у него же прокси.
+
+```go
+resp, err := fairway.Fetch(fairway.Request{
+	URL:        "https://api.example.com/proxies",
+	ViaFairway: true,
+})
+```
+
+Вход на прокси (`proxy_auth`) хост подставляет сам — первым пользователем
+из списка. Сертификату MITM хост доверяет, так что правило домена может
+быть и с `"mitm": true`. `http_hosts` проверяется так же, как без флага.
+Если для домена нет правила и листа по умолчанию, ответ будет тот же,
+что получил бы любой клиент прокси.
+
 ## Плагин на другом языке
 
 Подойдёт любой язык, который собирается в WASI-reactor (Rust, Zig,
@@ -273,6 +294,6 @@ TinyGo, AssemblyScript). Протокол — JSON через линейную �
 | `config.edit` | `{"proxies"?, "lists"?, "domains"?}` | конфиг после правки |
 | `events.subscribe` | `{"types":["proxy.banned"]}` | — |
 | `schedule.every` | `{"interval":"10m"}` (`"0s"` — выключить) | — |
-| `http.fetch` | `{"method","url","headers","body","timeout_ms"}` | `{"status","headers","body"}` |
+| `http.fetch` | `{"method","url","headers","body","timeout_ms","via_fairway"}` | `{"status","headers","body"}` |
 
 `body` — base64 (так кодирует байты JSON).

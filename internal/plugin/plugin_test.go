@@ -84,7 +84,9 @@ type env struct {
 // компиляцию модуля, поэтому с запасом.
 const waitLimit = 3 * time.Minute
 
-func newEnv(t *testing.T) *env {
+// newEnv поднимает менеджер плагинов на временном конфиге; host
+// дополняет то, что хост даёт плагинам.
+func newEnv(t *testing.T, host ...func(*Host)) *env {
 	t.Helper()
 	root := t.TempDir()
 	e := &env{t: t, dir: filepath.Join(root, "plugins"), logs: &syncBuffer{}}
@@ -102,8 +104,11 @@ func newEnv(t *testing.T) *env {
 	bus := &events.Bus{}
 
 	e.editor = &config.Editor{Path: path, Current: current.Load}
-	e.manager = NewManager(e.dir, Host{Config: current.Load, Editor: e.editor, Bus: bus},
-		log.New(e.logs, "", 0))
+	h := Host{Config: current.Load, Editor: e.editor, Bus: bus}
+	for _, f := range host {
+		f(&h)
+	}
+	e.manager = NewManager(e.dir, h, log.New(e.logs, "", 0))
 	e.manager.Cache = testCache
 	e.editor.Apply = func(c *config.Config) error {
 		current.Store(c)
@@ -270,6 +275,36 @@ func TestTickAndFetch(t *testing.T) {
 	if st.LastError == "" || st.LastTick == nil {
 		t.Fatalf("статус %+v", st)
 	}
+}
+
+// via_fairway уводит запрос на прокси самого fairway, а без него хост
+// отвечает ошибкой, а не идёт напрямую.
+func TestFetchViaFairway(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Прокси получает запрос с полным URL цели.
+		fmt.Fprintf(w, "proxied %s", r.URL.Host)
+	}))
+	defer proxy.Close()
+
+	perms := []Permission{Schedule, HTTPFetch}
+	plugin := config.Plugin{Enabled: true,
+		Granted:  []string{string(Schedule), string(HTTPFetch)},
+		Settings: settings(map[string]any{"tick": "50ms", "fetch_url": "http://api.example.com/x", "fetch_via": true})}
+
+	e := newEnv(t, func(h *Host) {
+		h.SelfClient = SelfClient(strings.TrimPrefix(proxy.URL, "http://"),
+			func() config.ProxyAuth { return config.ProxyAuth{} }, nil)
+	})
+	e.install("via", manifest("via", perms, "api.example.com"))
+	plugin.Name = "via"
+	e.setPlugins(plugin)
+	e.waitLog("plugin via: fetch: 200 proxied api.example.com")
+
+	e = newEnv(t)
+	e.install("direct", manifest("direct", perms, "api.example.com"))
+	plugin.Name = "direct"
+	e.setPlugins(plugin)
+	e.waitLog("plugin direct: fetch: http.fetch: via_fairway is not available")
 }
 
 func TestScheduleRejectsTooShortInterval(t *testing.T) {

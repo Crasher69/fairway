@@ -25,6 +25,9 @@ type Host struct {
 	Bus    *events.Bus
 	// Client — для http.fetch. nil — клиент по умолчанию с таймаутом.
 	Client *http.Client
+	// SelfClient — для http.fetch с via_fairway: через прокси самого
+	// fairway (см. SelfClient). nil — такие запросы не поддерживаются.
+	SelfClient *http.Client
 }
 
 // minTick — действующий минимум интервала; тесты его уменьшают.
@@ -95,6 +98,8 @@ type fetchRequest struct {
 	Headers   map[string][]string `json:"headers,omitempty"`
 	Body      []byte              `json:"body,omitempty"`
 	TimeoutMS int                 `json:"timeout_ms,omitempty"`
+	// ViaFairway — отправить запрос через прокси самого fairway.
+	ViaFairway bool `json:"via_fairway,omitempty"`
 }
 
 type fetchResponse struct {
@@ -244,7 +249,14 @@ func (in *instance) fetch(ctx context.Context, p fetchRequest) (*fetchResponse, 
 		}
 	}
 
-	client := *in.httpClient()
+	base := in.httpClient()
+	if p.ViaFairway {
+		if in.host.SelfClient == nil {
+			return nil, i18n.Errorf("http.fetch: via_fairway is not available")
+		}
+		base = in.host.SelfClient
+	}
+	client := *base
 	// Редирект — такой же запрос, и на чужой хост он уводить не должен.
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {

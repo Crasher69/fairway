@@ -18,6 +18,7 @@ type settings struct {
 	FailInit  bool   `json:"fail_init"`
 	Tick      string `json:"tick"`
 	FetchURL  string `json:"fetch_url"`
+	FetchVia  bool   `json:"fetch_via"`
 	AddProxy  string `json:"add_proxy"`
 	Forbidden string `json:"forbidden"`
 }
@@ -60,7 +61,7 @@ func init() {
 			if s.FetchURL == "" {
 				return nil
 			}
-			resp, err := fairway.Fetch(fairway.Request{URL: s.FetchURL})
+			resp, err := fairway.Fetch(fairway.Request{URL: s.FetchURL, ViaFairway: s.FetchVia})
 			if err != nil {
 				fairway.Logf("fetch: %v", err)
 				return err
