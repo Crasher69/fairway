@@ -177,7 +177,12 @@ func main() {
 	if *pluginsDir == "" {
 		*pluginsDir = filepath.Join(*dataDir, "plugins")
 	}
-	plugins := plugin.NewManager(*pluginsDir, plugin.Host{Config: readConfig, Bus: bus}, logger)
+	plugins := plugin.NewManager(*pluginsDir, plugin.Host{
+		Config: readConfig,
+		Bus:    bus,
+		SelfClient: plugin.SelfClient(*proxyAddr,
+			func() config.ProxyAuth { return readConfig().ProxyAuth }, ca.CertPEM()),
+	}, logger)
 	srv.Hooks = plugins
 	// Скомпилированные модули кешируются на диске: иначе каждый запуск
 	// fairway платил бы секундами компиляции за каждый плагин.

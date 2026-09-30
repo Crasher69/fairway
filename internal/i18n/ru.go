@@ -170,6 +170,7 @@ var ru = map[string]string{
 	"compiling %s: %w":                       "компиляция %s: %w",
 	"http.fetch: host %q is not in http_hosts of the manifest":        "http.fetch: хоста %q нет в http_hosts манифеста",
 	"http.fetch: response is larger than %d bytes":                    "http.fetch: ответ больше %d байт",
+	"http.fetch: via_fairway is not available":                        "http.fetch: via_fairway недоступен",
 	"http.fetch: scheme %q is not allowed":                            "http.fetch: схема %q не разрешена",
 	"manifest name %q does not match directory %q":                    "имя в манифесте %q не совпадает с каталогом %q",
 	"manifest: empty version":                                         "манифест: пустая версия",
