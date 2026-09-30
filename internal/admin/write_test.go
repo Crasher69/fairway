@@ -638,24 +638,28 @@ func findList(cfg *config.Config, name string) *config.List {
 	return nil
 }
 
-func TestEditorNotifiesWatcherAfterSave(t *testing.T) {
+func TestEditorWritesThroughWatcher(t *testing.T) {
 	e := newEditable(t)
-	saved := 0
-	e.srv.Editor.Saved = func() {
-		saved++
+	writes := 0
+	e.srv.Editor.Write = func(save func() error) error {
+		writes++
+		if err := save(); err != nil {
+			return err
+		}
 		// К этому моменту файл уже на диске.
 		if _, err := os.Stat(e.path); err != nil {
-			t.Errorf("Saved вызван до записи файла: %v", err)
+			t.Errorf("save не записал файл: %v", err)
 		}
+		return nil
 	}
 	send(t, "POST", e.url+"/api/proxies", config.Proxy{Name: "third", URL: "http://3.3.3.3:8080"})
-	if saved != 1 {
-		t.Errorf("Saved вызван %d раз, ожидался 1", saved)
+	if writes != 1 {
+		t.Errorf("Write вызван %d раз, ожидался 1", writes)
 	}
 	// Отклонённая правка файл не трогает — и сторожу сообщать нечего.
 	send(t, "POST", e.url+"/api/proxies", config.Proxy{Name: "third", URL: "http://3.3.3.3:8080"})
-	if saved != 1 {
-		t.Errorf("Saved вызван после отклонённой правки")
+	if writes != 1 {
+		t.Errorf("Write вызван после отклонённой правки")
 	}
 }
 

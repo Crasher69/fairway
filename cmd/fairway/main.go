@@ -229,8 +229,9 @@ func main() {
 			Current: readConfig,
 			Apply:   applyConfig,
 			// Панель сохраняет и применяет сама — сторожу незачем
-			// применять ту же версию второй раз.
-			Saved: watcher.MarkApplied,
+			// применять ту же версию второй раз. Запись идёт под его
+			// замком, иначе опрос мог поймать файл до отметки.
+			Write: watcher.Write,
 		}
 		go watcher.Run(ctx,
 			func(updated *config.Config) {

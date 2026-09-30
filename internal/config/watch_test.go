@@ -61,7 +61,7 @@ func TestWatchAppliesOnlyValidConfigs(t *testing.T) {
 	}
 }
 
-func TestMarkAppliedSkipsOwnWrite(t *testing.T) {
+func TestWriteSkipsOwnWrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	write := func(t *testing.T, body string) {
 		t.Helper()
@@ -81,9 +81,14 @@ func TestMarkAppliedSkipsOwnWrite(t *testing.T) {
 	// Запись «своя»: панель сохранила и применила сама, сторож должен
 	// промолчать. Штамп сравнивается по mtime и размеру, поэтому размер
 	// меняем — иначе на файловой системе с грубым mtime тест ничего бы
-	// не проверял.
-	write(t, `{"proxies":[{"name":"p1","url":"http://1.1.1.1:80"},{"name":"p2","url":"http://2.2.2.2:80"}]}`)
-	watcher.MarkApplied()
+	// не проверял. Запись — через Write: опрос каждые 20 мс, и между
+	// записью и отдельной отметкой он успевал бы её увидеть.
+	if err := watcher.Write(func() error {
+		write(t, `{"proxies":[{"name":"p1","url":"http://1.1.1.1:80"},{"name":"p2","url":"http://2.2.2.2:80"}]}`)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case c := <-changes:
 		t.Fatalf("сторож применил собственную запись панели: %d прокси", len(c.Proxies))
@@ -98,6 +103,6 @@ func TestMarkAppliedSkipsOwnWrite(t *testing.T) {
 			t.Fatalf("применён конфиг с %d прокси, ожидалось 3", len(c.Proxies))
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("сторож не заметил ручную правку после MarkApplied")
+		t.Fatal("сторож не заметил ручную правку после своей записи")
 	}
 }
