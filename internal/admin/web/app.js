@@ -716,7 +716,43 @@ async function refreshAccess() {
   const cfg = await api('api/config');
   $('password-state').textContent = cfg.password_set ? t('password is set') : t('no password, token only');
   $('password-clear').hidden = !cfg.password_set;
+  fillProxyAuth(cfg.proxy_auth || {});
 }
+
+// --- вход на прокси ---
+
+function fillProxyAuth(auth) {
+  const form = $('proxy-auth-form');
+  const users = auth.users || [];
+  form.enabled.checked = !!auth.enabled;
+  form.users.value = users.map((u) => u.login + ':' + u.password).join('\n');
+  $('proxy-auth-state').textContent = auth.enabled
+    ? t('on, users: {n}', { n: users.length })
+    : t('off, the proxy is open');
+}
+
+$('proxy-auth-form').onsubmit = (event) => {
+  event.preventDefault();
+  const form = $('proxy-auth-form');
+  const users = [];
+  for (const raw of form.users.value.split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    // Делим по первому двоеточию: в логине его быть не может, в пароле — может.
+    const at = line.indexOf(':');
+    if (at < 0) {
+      showConfigError(new Error(t('line “{line}”: expected login:password', { line })));
+      return;
+    }
+    users.push({ login: line.slice(0, at), password: line.slice(at + 1) });
+  }
+  // Форму перечитываем только после успешного сохранения: при ошибке
+  // введённое должно остаться на месте, чтобы его можно было поправить.
+  edit(async () => {
+    await send('PUT', 'api/proxy-auth', { enabled: form.enabled.checked, users });
+    await refreshAccess();
+  }, t('Proxy authorization saved'));
+};
 
 $('password-form').onsubmit = (event) => {
   event.preventDefault();

@@ -520,7 +520,7 @@
   <!-- Access -->
   <div id="view-access" class="page settings" hidden>
     <div class="page-head">
-      <h1 data-t>Access to the panel</h1>
+      <h1 data-t>Access</h1>
       <span class="spacer"></span>
       <button class="ghost" id="logout" data-t>Sign out</button>
     </div>
@@ -548,6 +548,21 @@
     <div class="card">
       <h2 data-t>Token</h2>
       <p class="hint" data-t-html>The link with the token is printed to the log at every start: <code>admin panel: http://…/?token=…</code>. Opening it saves the token into a cookie, so it is needed only once. A permanent token is set by the <code>-admin-token</code> flag.</p>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2 data-t>Proxy authorization</h2><span id="proxy-auth-state" class="hint"></span></div>
+      <p class="hint" data-t>By default the proxy is open to anyone who can reach its port. Turn this on if the port is visible beyond your own machines: clients will then have to give a login and password (Proxy-Authorization: Basic). The browser asks for them itself; in an application they go into the proxy settings or the address: http://login:password@host:port.</p>
+      <form id="proxy-auth-form">
+        <label class="toggle"><input type="checkbox" name="enabled"> <span data-t>require login and password</span></label>
+        <label class="field"><span data-t>Users</span>
+          <textarea name="users" rows="4" spellcheck="false" autocomplete="off" data-t-placeholder placeholder="login:password — one per line"></textarea>
+        </label>
+        <p class="hint" data-t>One user per line as login:password. Passwords are stored in the config as plain text, like the passwords of upstream proxies. Changes apply to new connections right away.</p>
+        <div class="form-actions">
+          <button class="primary" type="submit" data-t>Save</button>
+        </div>
+      </form>
     </div>
   </div>
 

@@ -3,6 +3,7 @@
 package config
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -25,11 +26,71 @@ type Config struct {
 	// AdminPassword — пароль входа в панель, когда ссылки с токеном под
 	// рукой нет. Панель записывает сюда хеш PBKDF2; вписанный руками
 	// открытый текст тоже работает (см. internal/admin/auth.go).
-	AdminPassword string   `json:"admin_password,omitempty"`
-	Defaults      Defaults `json:"defaults"`
-	Proxies       []Proxy  `json:"proxies"`
-	Lists         []List   `json:"lists"`
-	Domains       []Domain `json:"domains"`
+	AdminPassword string `json:"admin_password,omitempty"`
+	// ProxyAuth — вход на сам прокси. По умолчанию выключен: прокси открыт
+	// всем, кто достучался до порта.
+	ProxyAuth ProxyAuth `json:"proxy_auth"`
+	Defaults  Defaults  `json:"defaults"`
+	Proxies   []Proxy   `json:"proxies"`
+	Lists     []List    `json:"lists"`
+	Domains   []Domain  `json:"domains"`
+}
+
+// ProxyAuth — проверка клиентов прокси по заголовку Proxy-Authorization
+// (Basic). Нужна, когда порт прокси виден из сети шире, чем круг своих:
+// иначе через ваши апстримы ходит любой, кто его нашёл.
+//
+// Пароли лежат открытым текстом, как и пароли апстримов в этом же файле:
+// их сверяют на каждом соединении, и медленный хеш здесь бил бы по
+// скорости, а быстрый ничего бы не защитил.
+type ProxyAuth struct {
+	Enabled bool        `json:"enabled"`
+	Users   []ProxyUser `json:"users,omitempty"`
+}
+
+// ProxyUser — одна пара логин/пароль для клиентов прокси.
+type ProxyUser struct {
+	Login    string `json:"login"`
+	Password string `json:"password"`
+}
+
+// Allows сообщает, пускать ли клиента с такими логином и паролем. При
+// выключенной проверке пускает всех. Сверяются все пары до конца и за
+// постоянное время: иначе по времени ответа подбирается и логин, и пароль.
+func (a ProxyAuth) Allows(login, password string) bool {
+	if !a.Enabled {
+		return true
+	}
+	matched := 0
+	for _, u := range a.Users {
+		loginOK := subtle.ConstantTimeCompare([]byte(u.Login), []byte(login))
+		passwordOK := subtle.ConstantTimeCompare([]byte(u.Password), []byte(password))
+		matched |= loginOK & passwordOK
+	}
+	return matched == 1
+}
+
+func (a ProxyAuth) validate() error {
+	if a.Enabled && len(a.Users) == 0 {
+		return i18n.Errorf("proxy_auth: enabled, but there are no users — nobody could use the proxy")
+	}
+	logins := make(map[string]bool, len(a.Users))
+	for i, u := range a.Users {
+		switch {
+		case u.Login == "":
+			return i18n.Errorf("proxy_auth.users[%d]: empty login", i)
+		case strings.Contains(u.Login, ":"):
+			// Basic склеивает логин и пароль через двоеточие — логин с ним
+			// не разобрать обратно.
+			return i18n.Errorf("proxy_auth.users[%d] (%s): a login cannot contain \":\"", i, u.Login)
+		case u.Password == "":
+			return i18n.Errorf("proxy_auth.users[%d] (%s): empty password", i, u.Login)
+		case logins[u.Login]:
+			return i18n.Errorf("proxy_auth.users[%d]: login %q is already taken", i, u.Login)
+		}
+		logins[u.Login] = true
+	}
+	return nil
 }
 
 // Defaults — правило для доменов, которые не попали ни под один паттерн.
@@ -202,6 +263,9 @@ func Parse(raw []byte) (*Config, error) {
 // существуют, URL разбираются. Конфиг с ошибкой не должен применяться.
 func (c *Config) Validate() error {
 	if _, err := i18n.Parse(c.Language); err != nil {
+		return err
+	}
+	if err := c.ProxyAuth.validate(); err != nil {
 		return err
 	}
 	proxyNames := make(map[string]bool, len(c.Proxies))

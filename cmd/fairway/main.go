@@ -130,6 +130,12 @@ func main() {
 		IdleTimeout:     idleTimeout(*tunnelIdle),
 		ReplayBodyLimit: *replayBody,
 		Logger:          logger,
+		// Конфиг читается на каждое соединение: включение входа из панели
+		// или правкой файла действует сразу, без перезапуска.
+		Authorize: func(login, password string, ok bool) bool {
+			auth := currentConfig.Load().(*config.Config).ProxyAuth
+			return !auth.Enabled || (ok && auth.Allows(login, password))
+		},
 		Observe: func(s forward.Sample) {
 			ratings.Observe(s)
 			recorder.Observe(s)
@@ -310,6 +316,11 @@ func describe(logger *log.Logger, cfg *config.Config, pool *proxypool.Pool) {
 	}
 	for _, d := range cfg.Domains {
 		logger.Printf(i18n.T("  domain %s -> list %s"), d.Pattern, d.List)
+	}
+	if cfg.ProxyAuth.Enabled {
+		logger.Printf(i18n.T("  proxy authorization: on, users: %d"), len(cfg.ProxyAuth.Users))
+	} else {
+		logger.Print(i18n.T("  proxy authorization: off — anyone who reaches the proxy port can use it"))
 	}
 	switch {
 	case cfg.Defaults.List != "":
