@@ -842,7 +842,10 @@ function pluginBadge(p) {
   return el;
 }
 
-const pluginTitle = (p) => p.title || p.name;
+// localized — title и description плагина или поля настроек на языке
+// панели: из i18n[lang], а чего там нет — как написано в манифесте.
+const localized = (o) => ({ ...o, ...((o.i18n && o.i18n[lang]) || {}) });
+const pluginTitle = (p) => localized(p).title || p.name;
 
 async function refreshPlugins() {
   const resp = await api('api/plugins');
@@ -966,10 +969,11 @@ function renderPluginsTable() {
     id.className = 'plugin-id';
     id.textContent = p.name;
     name.append(title, id);
-    if (p.description) {
+    const { description } = localized(p);
+    if (description) {
       const desc = document.createElement('div');
       desc.className = 'plugin-desc';
-      desc.textContent = p.description;
+      desc.textContent = description;
       name.append(desc);
     }
 
@@ -1042,7 +1046,7 @@ function renderPluginPage() {
   $('plugin-title').textContent = pluginTitle(p);
   $('plugin-version').textContent = p.version ? 'v' + p.version : '';
   $('plugin-state').replaceChildren(pluginBadge(p));
-  $('plugin-description').textContent = p.description || '';
+  $('plugin-description').textContent = localized(p).description || '';
 
   const toggle = $('plugin-toggle');
   const action = pluginAction(p);
@@ -1131,7 +1135,8 @@ function renderPluginSettings(p) {
     return;
   }
 
-  for (const [key, prop] of Object.entries(props)) {
+  for (const [key, raw] of Object.entries(props)) {
+    const prop = localized(raw);
     const value = key in values ? values[key] : prop.default;
     const caption = document.createElement('span');
     caption.textContent = prop.title || key;

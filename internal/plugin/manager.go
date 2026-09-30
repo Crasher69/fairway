@@ -45,6 +45,7 @@ type Status struct {
 	Version        string          `json:"version,omitempty"`
 	Title          string          `json:"title,omitempty"`
 	Description    string          `json:"description,omitempty"`
+	I18n           map[string]Text `json:"i18n,omitempty"`
 	Permissions    []Permission    `json:"permissions,omitempty"`
 	HTTPHosts      []string        `json:"http_hosts,omitempty"`
 	Missing        []Permission    `json:"missing_permissions,omitempty"`
@@ -288,7 +289,7 @@ func (m *Manager) reconcile(ctx context.Context, cfg *config.Config) {
 			continue
 		}
 		mf := d.manifest
-		st.Version, st.Title, st.Description = mf.Version, mf.Title, mf.Description
+		st.Version, st.Title, st.Description, st.I18n = mf.Version, mf.Title, mf.Description, mf.I18n
 		st.Permissions, st.HTTPHosts, st.SettingsSchema = mf.Permissions, mf.HTTPHosts, mf.SettingsSchema
 		st.Kind, st.Hooks = mf.Kind, mf.Hooks
 		st.Missing = mf.Missing(entry.Granted)
