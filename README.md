@@ -12,7 +12,7 @@ best for which site, and routes traffic by those measurements. One binary, no
 dependencies, web panel built in.
 
 ```
-fairway -proxy :8080 -admin 127.0.0.1:8081
+fairway -proxy :7770 -admin 127.0.0.1:7771
 ```
 
 <p align="center"><img src="docs/panel.png" width="900" alt="Fairway panel: proxies for a domain ranked by cost, one of them banned, time-to-first-byte chart"></p>
@@ -33,7 +33,7 @@ sudo bash install.sh
 ```
 
 The service listens on every interface: the proxy on port `7770`, the panel
-on `7771` (8080 and 8081 are often taken on servers). The script prints the
+on `7771`, the project's standard ports. The script prints the
 proxy address for clients and the panel link with the token. Useful options
 (full list in `--help`):
 
@@ -66,7 +66,7 @@ available by a direct link, for example:
 ```
 curl -LO https://github.com/Crasher69/fairway/releases/latest/download/fairway-linux-amd64
 chmod +x fairway-linux-amd64
-./fairway-linux-amd64 -proxy :8080 -admin 127.0.0.1:8081
+./fairway-linux-amd64 -proxy :7770 -admin 127.0.0.1:7771
 ```
 
 Started this way, fairway keeps `config.json` and `data/` in the current
@@ -128,9 +128,9 @@ the password; fairway warns about it in the log. Set a password, and keep the
 token link out of shared logs. For a panel reachable from the server only, use
 `--admin 127.0.0.1:7771` and an SSH tunnel: `ssh -L 7771:127.0.0.1:7771 user@server`.
 
-**Docker bypasses ufw:** a port published with `-p 8080:8080` is reachable
+**Docker bypasses ufw:** a port published with `-p 7770:7770` is reachable
 from outside even when ufw denies it. Publish it on a specific address
-(`-p 10.0.0.5:8080:8080`) or filter in the `DOCKER-USER` chain.
+(`-p 10.0.0.5:7770:7770`) or filter in the `DOCKER-USER` chain.
 
 **The MITM root key** (`data/fairway-ca.key`) lets whoever holds it sign
 certificates your whole network trusts; see [MITM](#mitm-see-the-requests).
@@ -239,7 +239,7 @@ Supported upstreams: `http://`, `https://`, `socks5://` and `direct`.
 
 ## Panel
 
-Listens on `127.0.0.1:8081` by default. Two ways in and both work at once:
+Listens on `127.0.0.1:7771` by default. Two ways in and both work at once:
 the link with a token that fairway prints to the log on start, and a password
 set on the Access tab. The password is kept in the config as a PBKDF2 hash and
 survives a restart, unlike the token, which is new on every start unless it is
@@ -309,7 +309,7 @@ trusts. File mode is 0600; do not expose the data directory.
 
 ```
 docker run -d --name fairway \
-  -p 8080:8080 -p 127.0.0.1:8081:8081 \
+  -p 7770:7770 -p 127.0.0.1:7771:7771 \
   -v fairway-data:/data \
   ghcr.io/crasher69/fairway
 ```
@@ -318,7 +318,7 @@ Images for `linux/amd64` and `linux/arm64` are published to GitHub Container
 Registry on every release. To build locally: `docker build -t fairway .`
 
 The image is built on `scratch`: the binary, root certificates and time
-zones. Publish the panel only on `127.0.0.1`. Docker publishes `-p 8080:8080`
+zones. Publish the panel only on `127.0.0.1`. Docker publishes `-p 7770:7770`
 on every interface past ufw: read [Security](#security) before running it on
 a public host.
 

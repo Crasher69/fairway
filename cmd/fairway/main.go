@@ -48,8 +48,8 @@ func (l *upstreamList) Set(v string) error {
 func main() {
 	var upstreams upstreamList
 	var (
-		proxyAddr      = flag.String("proxy", ":8080", "proxy listen address")
-		adminAddr      = flag.String("admin", "127.0.0.1:8081", "admin panel address (loopback only by default)")
+		proxyAddr      = flag.String("proxy", ":7770", "proxy listen address")
+		adminAddr      = flag.String("admin", "127.0.0.1:7771", "admin panel address (loopback only by default)")
 		configPath     = flag.String("config", "config.json", "config file; created if missing")
 		dataDir        = flag.String("data", "./data", "directory for the CA and rating snapshots")
 		dialTimeout    = flag.Duration("dial-timeout", 15*time.Second, "timeout for connecting to the target via upstream and for its first byte")
@@ -381,7 +381,7 @@ func startAdmin(ctx context.Context, logger *log.Logger, addr string, srv *admin
 	}
 }
 
-// displayAddr делает адрес кликабельным: ":8081" сам по себе в браузер не
+// displayAddr делает адрес кликабельным: ":7771" сам по себе в браузер не
 // вставишь, нужен хост.
 func displayAddr(addr string) string {
 	if strings.HasPrefix(addr, ":") {

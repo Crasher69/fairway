@@ -22,7 +22,7 @@ CONF_DIR="/etc/fairway"
 CONF_FILE="${CONF_DIR}/config.json"
 UNIT_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
-# 8080/8081 на серверах часто заняты, поэтому у сервиса свои порты.
+# Стандартные порты проекта: 7770 — прокси, 7771 — панель.
 DEFAULT_PROXY_ADDR=":7770"
 DEFAULT_ADMIN_ADDR=":7771"
 PROXY_ADDR=""
