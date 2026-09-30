@@ -167,7 +167,13 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 		route = next
 	}
-	defer func() { upConn.Close() }()
+	// upConn меняется при повторе и после неудачного повтора бывает nil —
+	// закрывается то, что в нём к концу.
+	defer func() {
+		if upConn != nil {
+			upConn.Close()
+		}
+	}()
 	connected := time.Now()
 
 	hj, ok := w.(http.Hijacker)

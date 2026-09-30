@@ -349,6 +349,14 @@ func (m *Manager) reconcile(ctx context.Context, cfg *config.Config) {
 		m.running[name] = w
 		go func() {
 			defer close(w.done)
+			// Паника в работе с плагином — провал плагина, а не процесса.
+			defer func() {
+				if p := recover(); p != nil {
+					err := i18n.Errorf("plugin crashed: %v", p)
+					w.inst.noteError(err)
+					w.inst.setState(StateFailed, err)
+				}
+			}()
 			w.inst.run(runCtx, dir)
 		}()
 	}

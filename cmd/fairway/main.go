@@ -58,7 +58,7 @@ func main() {
 		dataDir        = flag.String("data", "./data", "directory for the CA and rating snapshots")
 		pluginsDir     = flag.String("plugins", "", "plugins directory; empty — <data>/plugins")
 		dialTimeout    = flag.Duration("dial-timeout", 15*time.Second, "connect timeout when the config sets none (defaults.connect_timeout and a domain's connect_timeout take precedence)")
-		tunnelIdle     = flag.Duration("tunnel-idle", forward.DefaultIdleTimeout, "close a tunnel with no traffic in either direction for this long; 0 disables")
+		tunnelIdle     = flag.Duration("tunnel-idle", forward.DefaultIdleTimeout, "close a tunnel with no traffic in either direction, or a decrypted (MITM) connection with no new request, after this long; 0 disables")
 		replayBody     = flag.Int64("replay-body", forward.DefaultReplayBodyLimit, "buffer request bodies up to this size (bytes) in MITM mode so they can be replayed; -1 disables")
 		pollInterval   = flag.Duration("config-poll", config.DefaultPollInterval, "how often to re-read the config")
 		ratingSave     = flag.Duration("ratings-save", 30*time.Second, "how often to save ratings to disk")
