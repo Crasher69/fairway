@@ -209,7 +209,9 @@ func TestDomainViewShowsRatingAndShares(t *testing.T) {
 func TestDomainViewShowsBan(t *testing.T) {
 	srv, ts := newTestServer(t, "")
 	observe(srv, sample("example.com", "fast", 20*time.Millisecond, 200, nil))
-	observe(srv, sample("example.com", "slow", 20*time.Millisecond, 403, nil))
+	for i := 0; i < 3; i++ { // бан по статусу — за серию отказов подряд
+		observe(srv, sample("example.com", "slow", 20*time.Millisecond, 403, nil))
+	}
 
 	var got domainResponse
 	getJSON(t, ts.URL, "/api/domains/example.com", &got)

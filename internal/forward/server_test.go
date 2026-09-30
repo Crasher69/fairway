@@ -310,3 +310,53 @@ func TestHTTPThroughHTTPProxyUpstream(t *testing.T) {
 		t.Errorf("Proxy-Authorization до апстрима: %q, ожидалось %q", gotAuth, up.ProxyAuthorization())
 	}
 }
+
+// slowBody отдаёт большое тело кусками, чтобы клиент успел уйти посреди.
+func slowBody(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	chunk := []byte(strings.Repeat("x", 32<<10))
+	for i := 0; i < 400; i++ {
+		if _, err := w.Write(chunk); err != nil {
+			return
+		}
+		w.(http.Flusher).Flush()
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestHTTPClientAbortIsNotProxyFailure — клиент закрыл соединение посреди
+// тела. Замер должен это отметить: иначе рейтинг считал бы обрыв ошибкой
+// прокси, и браузер, отменивший несколько загрузок, забанил бы здоровый.
+func TestHTTPClientAbortIsNotProxyFailure(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(slowBody))
+	defer target.Close()
+	direct, err := ParseUpstream("direct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	samples := make(chan Sample, 4)
+	proxySrv := httptest.NewServer(&Server{
+		Pick:    func(string, []string) (*Route, error) { return &Route{Upstream: direct, Name: "direct"}, nil },
+		Observe: func(s Sample) { samples <- s },
+	})
+	defer proxySrv.Close()
+
+	conn, err := net.Dial("tcp", mustHost(t, proxySrv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.WriteString(conn, "GET "+target.URL+"/ HTTP/1.1\r\nHost: "+mustHost(t, target.URL)+"\r\n\r\n")
+	if _, err := io.ReadFull(conn, make([]byte, 64<<10)); err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+
+	select {
+	case s := <-samples:
+		if !s.ClientGone {
+			t.Errorf("обрыв со стороны клиента не отмечен: status=%d err=%v", s.Status, s.Err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("замер так и не снят")
+	}
+}

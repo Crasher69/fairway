@@ -221,8 +221,10 @@ func (s *Server) roundTrip(up *mitmUpstream, client net.Conn, clientReader *bufi
 	counted := &countingReader{r: resp.Body}
 	sniff := &prefixReader{r: counted, limit: challenge.PrefixSize}
 	resp.Body = io.NopCloser(sniff)
-	if err := resp.Write(client); err != nil {
+	out := &clientWriter{w: client}
+	if err := resp.Write(out); err != nil {
 		sample.Err = err
+		sample.ClientGone = out.err != nil
 	}
 	sample.Bytes = counted.n
 	sample.Duration = time.Since(started)
@@ -256,7 +258,13 @@ func (s *Server) pipeUpgraded(client net.Conn, clientReader *bufio.Reader, targe
 		_, _ = io.Copy(target, clientReader)
 		closeWrite(target)
 	}()
-	n, err := io.Copy(client, targetReader)
+	out := &clientWriter{w: client}
+	n, err := io.Copy(out, targetReader)
+	if out.err != nil {
+		// Клиент закрыл сокет, пока цель ещё слала: обычное завершение
+		// WebSocket со стороны браузера, а не ошибка прокси.
+		err = nil
+	}
 	closeWrite(client)
 	<-done
 	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {

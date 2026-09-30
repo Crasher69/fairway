@@ -45,6 +45,23 @@ func TestDetect(t *testing.T) {
 			html("Attention Required! | Cloudflare", "<p>…</p>"), "cloudflare"},
 		{"без content-type и не html", 200, nil, []byte("_cf_chl_opt в тексте"), ""},
 		{"пустое тело 200", 200, htmlHeader, nil, ""},
+		// Обычные страницы, на которых детектор раньше срабатывал и банил
+		// прокси на каждой загрузке HTML.
+		{"скрипт add.js", 200, htmlHeader,
+			html("Магазин", `<script src="/js/add.js"></script>`), ""},
+		{"cloudflare bot management на обычной странице", 200, htmlHeader,
+			html("Новости", `<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>`), ""},
+		{"imperva на обычной странице", 200, htmlHeader,
+			html("Банк", `<script src="/_Incapsula_Resource?SWJIYLWA=719d34d31c8e3a6e6fffd425f7e032f3"></script>`), ""},
+		{"слово kasada в статье", 200, htmlHeader,
+			html("Блог", "<p>Как устроена защита Kasada</p>"), ""},
+		{"yandex smartcaptcha на форме", 200, htmlHeader,
+			html("Вход", `<script src="https://smartcaptcha.yandexcloud.net/captcha.js"></script>`), ""},
+		// Те же скрипты на странице отказа — заслон.
+		{"challenge-platform на 403", 403, htmlHeader,
+			html("Forbidden", `<script src="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1"></script>`), "cloudflare"},
+		{"datadome dd.js на 403", 403, htmlHeader,
+			html("Доступ", `<script src="https://js.datadome.co/dd.js"></script>`), "datadome"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

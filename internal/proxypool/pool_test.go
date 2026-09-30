@@ -372,3 +372,43 @@ func TestRenameKeepsCounters(t *testing.T) {
 		t.Errorf("после Release у переименованного осталось %d активных", a.Active())
 	}
 }
+
+// TestApplyPicksUpNewCredentials — сменённый у провайдера пароль вписывают
+// в панель, и он должен заработать сразу. Имя апстрима кредов не содержит,
+// поэтому по одному имени смену было не отличить, и прокси продолжал
+// ходить со старым паролем до перезапуска.
+func TestApplyPicksUpNewCredentials(t *testing.T) {
+	pool, err := New(mustConfig(t, `{
+	  "proxies": [{"id": "id-a", "name": "a", "url": "http://u:old@1.1.1.1:8080"}],
+	  "lists": [{"name": "main", "proxies": ["id-a"]}],
+	  "domains": [{"pattern": "example.com", "list": "main"}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := pool.Acquire("example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := lease.Proxy.Upstream
+
+	if err := pool.Apply(mustConfig(t, `{
+	  "proxies": [{"id": "id-a", "name": "a", "url": "http://u:new@1.1.1.1:8080"}],
+	  "lists": [{"name": "main", "proxies": ["id-a"]}],
+	  "domains": [{"pattern": "example.com", "list": "main"}]
+	}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	a := pool.Proxies()[0]
+	if a.Upstream == before || a.Upstream.Pass != "new" {
+		t.Fatalf("новый пароль не подхвачен: %q", a.Upstream.Pass)
+	}
+	if a.Active() != 1 {
+		t.Errorf("счётчик после смены пароля: %d, ожидалась 1", a.Active())
+	}
+	lease.Release()
+	if a.Active() != 0 {
+		t.Errorf("после Release осталось %d активных", a.Active())
+	}
+}
