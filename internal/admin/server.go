@@ -34,7 +34,7 @@ type Server struct {
 	// а не снимок.
 	Config func() *config.Config
 	// Editor разрешает правку конфига из панели. nil — панель только читает.
-	Editor  *Editor
+	Editor  *config.Editor
 	Token   string
 	Version string
 	Started time.Time

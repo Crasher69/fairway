@@ -26,6 +26,7 @@ import (
 
 	"fairway/internal/admin"
 	"fairway/internal/config"
+	"fairway/internal/events"
 	"fairway/internal/forward"
 	"fairway/internal/i18n"
 	"fairway/internal/mitmca"
@@ -101,6 +102,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Шина событий о состоянии: применённый конфиг, баны. Её читают
+	// подписчики вроде плагинов; на путь запроса она не влияет.
+	bus := &events.Bus{}
+
 	ratings := rating.NewRegistry()
 	ratings.BanDuration = func(domain string) time.Duration {
 		if rule, ok := pool.Rule(domain); ok {
@@ -109,6 +114,9 @@ func main() {
 		return 0
 	}
 	ratings.OnBan = func(domain, proxy, reason string, until time.Time) {
+		bus.Publish(events.ProxyBanned, events.ProxyBannedData{
+			Domain: domain, Proxy: proxy, Reason: reason, Until: until,
+		})
 		// Рейтинг знает прокси по id, а в логе нужно имя.
 		if p, ok := currentConfig.Load().(*config.Config).ProxyByID(proxy); ok {
 			proxy = p.Name
@@ -175,6 +183,11 @@ func main() {
 		}
 		currentConfig.Store(updated)
 		describe(logger, updated, pool)
+		bus.Publish(events.ConfigApplied, events.ConfigAppliedData{
+			Proxies: len(updated.Proxies),
+			Lists:   len(updated.Lists),
+			Domains: len(updated.Domains),
+		})
 		return nil
 	}
 
@@ -194,7 +207,7 @@ func main() {
 	// живёт в файле: при -upstream он собран из флагов и сохранять его некуда.
 	if len(upstreams) == 0 {
 		watcher := config.NewWatcher(*configPath, *pollInterval)
-		adminSrv.Editor = &admin.Editor{
+		adminSrv.Editor = &config.Editor{
 			Path:    *configPath,
 			Current: readConfig,
 			Apply:   applyConfig,

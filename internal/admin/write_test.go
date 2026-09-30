@@ -45,7 +45,7 @@ func newEditable(t *testing.T) *editable {
 	e.url = ts.URL
 
 	srv.Config = e.read
-	srv.Editor = &Editor{
+	srv.Editor = &config.Editor{
 		Path:    path,
 		Current: e.read,
 		Apply: func(updated *config.Config) error {

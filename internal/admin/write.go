@@ -4,91 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"sync"
 
 	"fairway/internal/config"
 	"fairway/internal/i18n"
 )
-
-// Editor меняет конфиг на диске и применяет его на лету.
-//
-// Отдельный тип, а не метод сервера, потому что здесь нужна своя дисциплина:
-// правки идут по очереди (mutex), каждая проверяется целиком до записи, и
-// файл на диске остаётся единственным источником правды — сторож перечитает
-// его и применит теми же путями, что и ручную правку.
-type Editor struct {
-	Path string
-	// Current отдаёт конфиг, применённый последним.
-	Current func() *config.Config
-	// Apply применяет новый конфиг к живому пулу.
-	Apply func(*config.Config) error
-	// Saved вызывается сразу после записи файла — сторожу конфига, чтобы он
-	// не принял нашу же запись за чужую правку и не применил её второй раз.
-	// Может быть nil.
-	Saved func()
-
-	mu sync.Mutex
-}
-
-// ErrNoEditor означает, что запись не настроена (например, конфиг задан
-// флагами -upstream и файла нет).
-var ErrNoEditor = errors.New("config editing is unavailable")
-
-// edit применяет изменение к копии конфига, проверяет и сохраняет.
-func (e *Editor) edit(change func(*config.Config) error) (*config.Config, error) {
-	if e == nil || e.Path == "" {
-		return nil, ErrNoEditor
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	next := cloneConfig(e.Current())
-	if err := change(next); err != nil {
-		return nil, err
-	}
-	// Проверяем до записи: битый конфиг не должен попасть на диск даже
-	// на мгновение — его подхватит сторож и начнёт ругаться.
-	if err := next.Validate(); err != nil {
-		return nil, err
-	}
-	if err := next.Save(e.Path); err != nil {
-		return nil, err
-	}
-	if e.Saved != nil {
-		e.Saved()
-	}
-	if err := e.Apply(next); err != nil {
-		return nil, err
-	}
-	return next, nil
-}
-
-// cloneConfig делает глубокую копию: менять живой конфиг на месте нельзя,
-// его в этот момент читают обработчики запросов.
-func cloneConfig(src *config.Config) *config.Config {
-	dst := &config.Config{
-		Defaults: src.Defaults,
-		Language: src.Language,
-		// Пароль панели копируется вместе с остальным: иначе любая правка
-		// из панели молча снимала бы его.
-		AdminPassword: src.AdminPassword,
-		ProxyAuth:     src.ProxyAuth,
-	}
-	dst.ProxyAuth.Users = append([]config.ProxyUser(nil), src.ProxyAuth.Users...)
-	dst.Proxies = append([]config.Proxy(nil), src.Proxies...)
-	dst.Lists = append([]config.List(nil), src.Lists...)
-	for i, l := range src.Lists {
-		dst.Lists[i].Proxies = append([]string(nil), l.Proxies...)
-	}
-	dst.Domains = append([]config.Domain(nil), src.Domains...)
-	for i, d := range src.Domains {
-		if d.MITM != nil {
-			mitm := *d.MITM
-			dst.Domains[i].MITM = &mitm
-		}
-	}
-	return dst
-}
 
 // --- обработчики ---
 
@@ -436,17 +355,17 @@ func (s *Server) saveLanguage(w http.ResponseWriter, r *http.Request) {
 // reload перечитывает конфиг с диска и применяет его. Нужен, когда файл
 // правили руками и ждать опроса сторожа не хочется.
 func (s *Server) reload(w http.ResponseWriter, r *http.Request) {
-	if s.Editor == nil || s.Editor.Path == "" {
-		http.Error(w, ErrNoEditor.Error(), http.StatusBadRequest)
+	cfg, err := s.Editor.Reload()
+	var reloadErr *config.ReloadError
+	switch {
+	case errors.As(err, &reloadErr) && reloadErr.Applying:
+		http.Error(w, i18n.T("config not applied: ")+err.Error(), http.StatusBadRequest)
 		return
-	}
-	cfg, err := config.Load(s.Editor.Path)
-	if err != nil {
+	case errors.As(err, &reloadErr):
 		http.Error(w, i18n.T("config not reloaded: ")+err.Error(), http.StatusBadRequest)
 		return
-	}
-	if err := s.Editor.Apply(cfg); err != nil {
-		http.Error(w, i18n.T("config not applied: ")+err.Error(), http.StatusBadRequest)
+	case err != nil:
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	writeJSON(w, cfg)
@@ -455,10 +374,10 @@ func (s *Server) reload(w http.ResponseWriter, r *http.Request) {
 // applyEdit — общий хвост всех правок: применить, ответить конфигом или
 // понятной ошибкой.
 func (s *Server) applyEdit(w http.ResponseWriter, change func(*config.Config) error) {
-	cfg, err := s.Editor.edit(change)
+	cfg, err := s.Editor.Edit(change)
 	if err != nil {
 		status := http.StatusBadRequest
-		if errors.Is(err, ErrNoEditor) {
+		if errors.Is(err, config.ErrNoEditor) {
 			status = http.StatusNotImplemented
 		}
 		http.Error(w, err.Error(), status)
@@ -504,7 +423,7 @@ func (s *Server) importProxies(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var result config.ImportResult
-	cfg, err := s.Editor.edit(func(cfg *config.Config) error {
+	cfg, err := s.Editor.Edit(func(cfg *config.Config) error {
 		result = cfg.ImportProxies(body.Text, body.Scheme, body.Prefix, body.Country, body.Comment)
 		if result.AddedN == 0 {
 			// Нечего добавлять — не переписываем файл на ровном месте,
@@ -531,7 +450,7 @@ func (s *Server) importProxies(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil && !errors.Is(err, errNothingImported) {
 		status := http.StatusBadRequest
-		if errors.Is(err, ErrNoEditor) {
+		if errors.Is(err, config.ErrNoEditor) {
 			status = http.StatusNotImplemented
 		}
 		http.Error(w, err.Error(), status)
