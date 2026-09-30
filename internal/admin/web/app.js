@@ -531,7 +531,7 @@ function renderLog() {
 
 // Линейный график: по горизонтали время, по вертикали TTFB, отдельная линия
 // на каждый прокси. Точки запоминаются для подсказки при наведении.
-const chart = { points: [], x: null, y: null, pad: { left: 52, right: 12, top: 12, bottom: 22 } };
+const chart = { points: [], x: null, y: null, pad: { left: 60, right: 12, top: 12, bottom: 22 } };
 
 function renderChart() {
   const svg = $('chart');
