@@ -24,7 +24,7 @@ fairway -proxy :8080 -admin 127.0.0.1:8081
 `install.sh` sets fairway up as a systemd service on RHEL, Rocky, Alma,
 Fedora, Debian and Ubuntu. It downloads the release binary for the machine's
 architecture and checks it against `SHA256SUMS`, creates the `fairway` system
-user, puts the config in `/etc/fairway` and the data in `/var/lib/fairway`,
+user, keeps the config in `/etc/fairway` and the data in `/var/lib/fairway`,
 and starts the service.
 
 ```
@@ -32,22 +32,27 @@ curl -fsSLO https://raw.githubusercontent.com/Crasher69/fairway/main/install.sh
 sudo bash install.sh
 ```
 
-Defaults: proxy on `:8080`, panel on `127.0.0.1:8081`. The script prints the
-panel link with the token and the `ssh -L` command to reach the panel from
-your machine. Useful options (full list in `--help`):
+The service listens on every interface: the proxy on port `7770`, the panel
+on `7771` (8080 and 8081 are often taken on servers). The script prints the
+proxy address for clients and the panel link with the token. Useful options
+(full list in `--help`):
 
 ```
 sudo bash install.sh --proxy :3128                  # another proxy port
-sudo bash install.sh --allow-from 203.0.113.0/24    # open the port in firewalld/ufw for one network
+sudo bash install.sh --admin 127.0.0.1:7771         # panel reachable from the server only
+sudo bash install.sh --open-firewall                # open the ports in firewalld/ufw
+sudo bash install.sh --allow-from 203.0.113.0/24    # ...or only for one network
 sudo bash install.sh --download                     # update to the latest release
 sudo bash install.sh --version v0.3.0               # a specific release
 sudo bash install.sh --uninstall                    # remove the service, keep config and data
 ```
 
-An update keeps the ports already in the unit and never touches an existing
-config. A fresh install writes a starter config with `allow_direct: false`, so
-until you add proxies and rules every request gets a 503 instead of leaving
-from the server's own IP (see [Security](#security)).
+An update keeps the ports already in the unit and never touches the config.
+
+A fresh install works as a plain proxy right away: the config fairway creates
+on first start has `allow_direct: true`, so until you add proxies and rules
+traffic goes out directly from the server. The proxy is open to anyone who
+can reach the port; see [Security](#security) for how to close it.
 
 ### Binaries
 
@@ -61,7 +66,7 @@ available by a direct link, for example:
 ```
 curl -LO https://github.com/Crasher69/fairway/releases/latest/download/fairway-linux-amd64
 chmod +x fairway-linux-amd64
-./fairway-linux-amd64 -proxy 127.0.0.1:8080 -admin 127.0.0.1:8081
+./fairway-linux-amd64 -proxy :8080 -admin 127.0.0.1:8081
 ```
 
 Started this way, fairway keeps `config.json` and `data/` in the current
@@ -70,61 +75,62 @@ directory. There is also a [Docker image](#docker), or build from source, see
 
 ## Quick start
 
-1. **Open the panel.** Use the link with the token from the log
-   (`journalctl -u fairway -n 50` for the service). On a server the panel
-   listens on loopback only, so forward it first:
-   `ssh -L 8081:127.0.0.1:8081 user@server`, then open the link locally.
-   Set a password on the Access tab so you do not need the token next time.
-2. **Add proxies** on the Proxies tab: one at a time, or a whole purchase
-   through the list import (`ip:port:login:password`,
-   `socks5://user:pass@host:port` and other common formats).
-3. **Make a list** on the Lists tab and tick the proxies it should use.
-4. **Add domain rules** on the Domains tab: which list serves which site.
-   To balance all traffic, put a list in `defaults.list` or add a `*` rule.
-5. **Point clients at the proxy.** Fairway is an HTTP proxy (plain HTTP and
+1. **Open the panel** with the token link from the log
+   (`journalctl -u fairway -n 50` for the service): `http://server:7771/?token=…`.
+   Set a password on the Access tab so you do not need the token after a
+   restart.
+2. **Point clients at the proxy.** Fairway is an HTTP proxy (plain HTTP and
    `CONNECT` for HTTPS):
 
    ```
-   curl -x http://server:8080 https://example.com/
-   export HTTPS_PROXY=http://server:8080 HTTP_PROXY=http://server:8080
+   curl -x http://server:7770 https://example.com/
+   export HTTPS_PROXY=http://server:7770 HTTP_PROXY=http://server:7770
    ```
 
    In a browser, set it as the HTTP and HTTPS proxy in the network settings.
+   With no proxies configured, traffic goes out directly from the server.
+3. **Add proxies** on the Proxies tab: one at a time, or a whole purchase
+   through the list import (`ip:port:login:password`,
+   `socks5://user:pass@host:port` and other common formats).
+4. **Make a list** on the Lists tab and tick the proxies it should use.
+5. **Add domain rules** on the Domains tab: which list serves which site.
+   To balance all traffic, put a list in `defaults.list` or add a `*` rule.
 
 After a few requests the Domains view shows which proxies serve each site,
 their cost and their traffic share.
 
 ## Security
 
-**The proxy port has no client authentication.** Anyone who can reach it can
-send traffic through your proxies (and through the server's own IP if
-`allow_direct` is on). Before exposing it beyond a trusted network:
+By default the proxy is open: anyone who can reach its port can use it, and
+with `allow_direct: true` domains without a rule go out from the host's own
+IP. That is the intended starting point, so a fresh install works at once.
+To close it:
 
-- listen on a private interface only: `-proxy 10.0.0.5:8080`;
-- or restrict the port in the firewall to your clients' addresses:
+- **Proxy authorization.** On the Access tab turn on login and password for
+  the proxy (`proxy_auth` in the config). Clients then pass
+  `Proxy-Authorization: Basic`: browsers ask for it themselves, applications
+  take it in the address, `http://login:password@server:7770`.
+- **Direct traffic.** Set `"allow_direct": false` in `defaults`: a domain
+  without a rule then gets a 503 instead of leaving from your real IP.
+- **Firewall.** Open the ports only to your clients:
 
   ```
-  sudo ufw allow proto tcp from 203.0.113.0/24 to any port 8080          # Ubuntu/Debian
+  sudo ufw allow proto tcp from 203.0.113.0/24 to any port 7770          # Ubuntu/Debian
   sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" \
-       source address="203.0.113.0/24" port port="8080" protocol="tcp" accept' \
+       source address="203.0.113.0/24" port port="7770" protocol="tcp" accept' \
        && sudo firewall-cmd --reload                                      # RHEL family
   ```
 
-  `install.sh --allow-from CIDR` does the same;
-- or keep it on `127.0.0.1` and reach it over an SSH tunnel.
+  `install.sh --allow-from CIDR` does the same for both ports.
 
-**A config created by fairway itself on first start has
-`allow_direct: true`**: with no proxies configured it forwards straight from
-the host's IP, which is handy on your own machine and an open relay on a
-public server. `install.sh` writes a stricter starter config; with the plain
-binary or Docker set `"allow_direct": false` before opening the port.
+**The panel** on a non-loopback address lets in anyone with the token link or
+the password; fairway warns about it in the log. Set a password, and keep the
+token link out of shared logs. For a panel reachable from the server only, use
+`--admin 127.0.0.1:7771` and an SSH tunnel: `ssh -L 7771:127.0.0.1:7771 user@server`.
 
 **Docker bypasses ufw:** a port published with `-p 8080:8080` is reachable
 from outside even when ufw denies it. Publish it on a specific address
 (`-p 10.0.0.5:8080:8080`) or filter in the `DOCKER-USER` chain.
-
-**The panel** listens on `127.0.0.1` by default. If you move it to another
-address, fairway warns in the log; set a password and firewall that port.
 
 **The MITM root key** (`data/fairway-ca.key`) lets whoever holds it sign
 certificates your whole network trusts; see [MITM](#mitm-see-the-requests).
@@ -225,9 +231,9 @@ Rules match from specific to general: exact name → longest `*.suffix` →
 `*` → `defaults.list`.
 
 With `allow_direct: false` a domain without a rule gets a 503 instead of
-silently leaving from your real IP. A missing field means `false`, but the
-config fairway writes on first start sets it to `true`; see
-[Security](#security).
+silently leaving from your real IP. A missing field means `false`; the config
+fairway writes on first start sets it to `true`, so a fresh install works as a
+plain proxy at once.
 
 Supported upstreams: `http://`, `https://`, `socks5://` and `direct`.
 
@@ -313,9 +319,8 @@ Registry on every release. To build locally: `docker build -t fairway .`
 
 The image is built on `scratch`: the binary, root certificates and time
 zones. Publish the panel only on `127.0.0.1`. Docker publishes `-p 8080:8080`
-on every interface past ufw, and a config created on first start allows
-direct traffic: read [Security](#security) before running it on a public
-host.
+on every interface past ufw: read [Security](#security) before running it on
+a public host.
 
 ## Performance
 

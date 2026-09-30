@@ -22,8 +22,9 @@ CONF_DIR="/etc/fairway"
 CONF_FILE="${CONF_DIR}/config.json"
 UNIT_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
-DEFAULT_PROXY_ADDR=":8080"
-DEFAULT_ADMIN_ADDR="127.0.0.1:8081"
+# 8080/8081 на серверах часто заняты, поэтому у сервиса свои порты.
+DEFAULT_PROXY_ADDR=":7770"
+DEFAULT_ADMIN_ADDR=":7771"
 PROXY_ADDR=""
 ADMIN_ADDR=""
 VERSION="latest"
@@ -66,12 +67,11 @@ install.sh — установка fairway как systemd-сервиса (RHEL-с
     --bin PATH         явный путь к готовому бинарнику
     --download         скачать свежий, даже если рядом лежит файл
     --no-download      только локальный файл, в сеть не ходить
-    --proxy ADDR       адрес прокси-порта                   (по умолчанию :8080)
-    --admin ADDR       адрес веб-панели             (по умолчанию 127.0.0.1:8081)
-    --allow-from CIDR  открыть прокси-порт в firewalld/ufw только для этой
-                       сети, напр. 203.0.113.0/24; можно повторять
-    --open-firewall    открыть прокси-порт в firewalld/ufw для всех
-                       (у прокси нет авторизации клиентов, см. README)
+    --proxy ADDR       адрес прокси-порта                   (по умолчанию :7770)
+    --admin ADDR       адрес веб-панели                     (по умолчанию :7771)
+    --allow-from CIDR  открыть порты прокси и панели в firewalld/ufw только
+                       для этой сети, напр. 203.0.113.0/24; можно повторять
+    --open-firewall    открыть порты прокси и панели в firewalld/ufw для всех
     --uninstall        удалить сервис (конфиг и данные остаются)
     -h, --help         эта справка
 
@@ -83,6 +83,7 @@ install.sh — установка fairway как systemd-сервиса (RHEL-с
     sudo ./install.sh --version v0.3.0                 # конкретный тег
     sudo ./install.sh --download                       # обновить до свежей
     sudo ./install.sh --proxy :3128 --allow-from 10.0.0.0/8
+    sudo ./install.sh --admin 127.0.0.1:7771           # панель только с сервера
 USAGE
 }
 
@@ -288,28 +289,9 @@ mkdir -p "$DATA_DIR" "$CONF_DIR"
 # панель сохраняет правки конфига сама, поэтому каталог должен быть ей доступен
 chown -R "${SERVICE_USER}:${SERVICE_USER}" "$DATA_DIR" "$CONF_DIR"
 chmod 750 "$DATA_DIR" "$CONF_DIR"
-if [[ -f "$CONF_FILE" ]]; then
-    ok "Конфиг ${CONF_FILE} уже есть, не трогаю"
-else
-    # Сам fairway при первом запуске пишет конфиг с allow_direct: true —
-    # удобно на своей машине, но на сервере это открытый прокси с IP сервера.
-    # Здесь стартовый конфиг строже: без правила домен получает 503.
-    info "Пишу стартовый конфиг ${CONF_FILE} (allow_direct: false)"
-    install -m 600 -o "$SERVICE_USER" -g "$SERVICE_USER" /dev/null "$CONF_FILE"
-    cat > "$CONF_FILE" <<'EOF'
-{
-  "language": "en",
-  "defaults": {
-    "allow_direct": false,
-    "max_conns_per_proxy": 32,
-    "ban_duration": "5m"
-  },
-  "proxies": [],
-  "lists": [],
-  "domains": []
-}
-EOF
-fi
+# Конфиг не пишем: fairway создаёт его сам при первом запуске, с
+# allow_direct: true — без заведённых прокси трафик идёт напрямую.
+[[ -f "$CONF_FILE" ]] && ok "Конфиг ${CONF_FILE} уже есть, не трогаю"
 ok "Каталоги готовы"
 
 info "Пишу юнит ${UNIT_FILE}"
@@ -375,55 +357,66 @@ elif command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "^Status: act
     FIREWALL="ufw"
 fi
 
+# Панель на loopback наружу открывать незачем.
+PORTS="$PROXY_PORT"
+[[ $ADMIN_LOCAL -eq 1 ]] || PORTS+=" $ADMIN_PORT"
+
 if [[ $OPEN_FIREWALL -eq 1 || -n "$ALLOW_FROM" ]]; then
     if [[ -z "$FIREWALL" ]]; then
-        warn "ни firewalld, ни ufw не активны — открывать нечего."
-        warn "Порт ${PROXY_PORT}/tcp и так доступен всем, кто достучится до сервера."
-    elif [[ $OPEN_FIREWALL -eq 1 ]]; then
-        info "Открываю порт ${PROXY_PORT}/tcp в ${FIREWALL} для всех"
-        if [[ "$FIREWALL" == "firewalld" ]]; then
-            firewall-cmd --permanent --add-port="${PROXY_PORT}/tcp" >/dev/null
-            firewall-cmd --reload >/dev/null
-        else
-            ufw allow "${PROXY_PORT}/tcp" >/dev/null
-        fi
-        ok "Порт открыт"
-        warn "У прокси нет авторизации: им сможет пользоваться любой, кто знает адрес."
+        warn "ни firewalld, ни ufw не активны — открывать нечего, порты ${PORTS// /, } и так доступны."
     else
-        for net in $ALLOW_FROM; do
-            info "Открываю порт ${PROXY_PORT}/tcp в ${FIREWALL} для ${net}"
-            if [[ "$FIREWALL" == "firewalld" ]]; then
-                family="ipv4"; [[ "$net" == *:* ]] && family="ipv6"
-                firewall-cmd --permanent --add-rich-rule="rule family=\"${family}\" source address=\"${net}\" port port=\"${PROXY_PORT}\" protocol=\"tcp\" accept" >/dev/null
-            else
-                ufw allow proto tcp from "$net" to any port "$PROXY_PORT" >/dev/null
+        for port in $PORTS; do
+            if [[ $OPEN_FIREWALL -eq 1 ]]; then
+                info "Открываю порт ${port}/tcp в ${FIREWALL} для всех"
+                if [[ "$FIREWALL" == "firewalld" ]]; then
+                    firewall-cmd --permanent --add-port="${port}/tcp" >/dev/null
+                else
+                    ufw allow "${port}/tcp" >/dev/null
+                fi
+                continue
             fi
+            for net in $ALLOW_FROM; do
+                info "Открываю порт ${port}/tcp в ${FIREWALL} для ${net}"
+                if [[ "$FIREWALL" == "firewalld" ]]; then
+                    family="ipv4"; [[ "$net" == *:* ]] && family="ipv6"
+                    firewall-cmd --permanent --add-rich-rule="rule family=\"${family}\" source address=\"${net}\" port port=\"${port}\" protocol=\"tcp\" accept" >/dev/null
+                else
+                    ufw allow proto tcp from "$net" to any port "$port" >/dev/null
+                fi
+            done
         done
         [[ "$FIREWALL" == "firewalld" ]] && firewall-cmd --reload >/dev/null
-        ok "Доступ открыт для: ${ALLOW_FROM}"
+        ok "Порты открыты"
     fi
 elif [[ -n "$FIREWALL" ]]; then
-    warn "${FIREWALL} активен, порт ${PROXY_PORT}/tcp снаружи закрыт."
-    warn "Открыть для своей сети: sudo $0 --allow-from 203.0.113.0/24"
-else
-    warn "Firewall не найден: порт ${PROXY_PORT}/tcp доступен всем, кто достучится до сервера,"
-    warn "а авторизации у прокси нет. Закройте его снаружи или ограничьте по IP (см. README)."
+    warn "${FIREWALL} активен, порты ${PORTS// /, } снаружи закрыты. Открыть:"
+    warn "    sudo $0 --open-firewall                 # для всех"
+    warn "    sudo $0 --allow-from 203.0.113.0/24     # для одной сети"
 fi
 
 # ─── итог ─────────────────────────────────────────────────────────────────────
 
 printf '\n\033[1;32mГотово.\033[0m Прокси слушает %s, панель — %s\n\n' "$PROXY_ADDR" "$ADMIN_ADDR"
 
+SERVER_HOST="$(hostname -I 2>/dev/null | awk '{print $1}')"
+SERVER_HOST="${SERVER_HOST:-$(hostname -f 2>/dev/null || hostname)}"
+
 # Токен новый на каждый запуск, поэтому смотрим только журнал текущего.
+# fairway печатает адрес вида :7771 как 127.0.0.1:7771 — если панель
+# слушает все интерфейсы, подставляем адрес сервера.
 echo "Ссылка на панель с токеном (из журнала запуска):"
 INVOCATION="$(systemctl show -p InvocationID --value "$SERVICE_NAME" 2>/dev/null || true)"
-if [[ -z "$INVOCATION" ]] || ! journalctl _SYSTEMD_INVOCATION_ID="$INVOCATION" --no-pager -o cat 2>/dev/null \
-     | grep -oE 'https?://[^[:space:]]+token=[^[:space:]]+' | tail -n 1 | sed 's/^/    /' | grep .; then
+LINK=""
+if [[ -n "$INVOCATION" ]]; then
+    LINK="$(journalctl _SYSTEMD_INVOCATION_ID="$INVOCATION" --no-pager -o cat 2>/dev/null \
+            | grep -oE 'https?://[^[:space:]]+token=[^[:space:]]+' | tail -n 1 || true)"
+fi
+if [[ -n "$LINK" ]]; then
+    [[ $ADMIN_LOCAL -eq 1 ]] || LINK="${LINK/\/\/127.0.0.1:/\/\/${SERVER_HOST}:}"
+    echo "    $LINK"
+else
     echo "    не нашёл в журнале, посмотрите сами: journalctl -u ${SERVICE_NAME} -n 50"
 fi
-
-SSH_USER="${SUDO_USER:-$(id -un)}"
-SSH_HOST="$(hostname -f 2>/dev/null || hostname)"
 
 cat <<EOF
 
@@ -434,18 +427,23 @@ cat <<EOF
 
 Конфиг:  ${CONF_FILE}
 Данные:  ${DATA_DIR}  (рейтинги, ключ CA)
+
+Прокси для клиентов: http://${SERVER_HOST}:${PROXY_PORT}
+Прокси открыт всем, кто достучится до порта, и без заведённых прокси
+пускает трафик напрямую (allow_direct: true). Закрыть его логином и паролем
+можно на вкладке «Доступ» панели.
 EOF
 
 if [[ $ADMIN_LOCAL -eq 1 ]]; then
     cat <<EOF
 Панель доступна только с самого сервера. Пробросьте её со своей машины:
-    ssh -L ${ADMIN_PORT}:127.0.0.1:${ADMIN_PORT} ${SSH_USER}@${SSH_HOST}
-и откройте ссылку выше в браузере. Чтобы не искать токен, задайте пароль
-на вкладке «Доступ».
+    ssh -L ${ADMIN_PORT}:127.0.0.1:${ADMIN_PORT} ${SUDO_USER:-$(id -un)}@${SERVER_HOST}
 EOF
 else
-    warn "Панель слушает ${ADMIN_ADDR}, не loopback: она доступна по сети."
-    warn "Задайте пароль на вкладке «Доступ» и закройте порт ${ADMIN_PORT} firewall'ом."
+    cat <<EOF
+Панель открыта по сети и пускает по ссылке с токеном. Чтобы не искать
+токен после перезапуска, задайте пароль на вкладке «Доступ».
+EOF
 fi
 
 cat <<EOF
