@@ -2,13 +2,21 @@
   "name": "hello",
   "version": "0.1.0",
   "title": "Hello",
-  "description": "Минимальный пример: пишет в лог число прокси.",
+  "description": "Minimal example: logs the number of proxies and shows it on its own page.",
   "kind": "base",
-  "permissions": ["config.read", "schedule"],
+  "permissions": [
+    "config.read",
+    "schedule"
+  ],
   "settings_schema": {
     "type": "object",
     "properties": {
-      "interval": {"type": "string", "title": "Интервал", "default": "10m"}
+      "interval": {
+        "type": "string",
+        "title": "Interval",
+        "description": "How often to log: 30s, 10m, 1h.",
+        "default": "10m"
+      }
     }
   }
 }

@@ -30,7 +30,7 @@ func TestToggledElementsAreHideable(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := string(raw)
-	for _, id := range []string{"view-monitor", "view-proxies", "view-lists", "view-rules", "view-cert"} {
+	for _, id := range []string{"view-monitor", "view-proxies", "view-lists", "view-rules", "view-cert", "view-plugins", "view-plugin"} {
 		if !strings.Contains(html, `id="`+id+`"`) {
 			t.Errorf("в разметке нет раздела %s, а JS его переключает", id)
 		}

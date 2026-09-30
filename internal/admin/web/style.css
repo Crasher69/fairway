@@ -674,6 +674,7 @@ textarea {
   .tab { height: 40px; }
   .page { padding: 16px; }
   .chip { display: none; }
+  .page-head { flex-wrap: wrap; }
 }
 
 /* Экран входа. Отдельный слой поверх панели: под ним уже отрисованная,
@@ -711,3 +712,88 @@ textarea {
   color: var(--bad);
   font-size: 13px;
 }
+
+/* --- плагины --- */
+
+/* Выпадающее меню в шапке: страницы включённых плагинов и вход в их
+   настройки. Кнопка выглядит как вкладка, а меню висит под ней. */
+.tab-menu { position: relative; display: flex; }
+.tab-menu .tab { display: flex; align-items: center; gap: 4px; }
+.tab-menu .caret { transition: transform .12s; }
+.tab-menu .tab[aria-expanded="true"] .caret { transform: rotate(180deg); }
+
+/* fixed, а не absolute: на узком экране вкладки прокручиваются вбок, и
+   меню внутри такого контейнера обрезалось бы. Координаты ставит JS. */
+.menu {
+  position: fixed;
+  z-index: 20;
+  min-width: 220px;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+}
+
+.menu a {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  color: var(--text);
+  font-size: 13.5px;
+}
+.menu a:hover { background: var(--panel-2); text-decoration: none; }
+.menu a.active { background: var(--accent-soft); color: var(--accent-strong); }
+.menu a .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+.menu a .dot.ok { background: var(--ok); }
+.menu a .dot.bad { background: var(--bad); }
+.menu a .dot.warn { background: var(--warn); }
+.menu-empty { margin: 0; padding: 7px 10px; color: var(--muted); font-size: 13px; }
+.menu .menu-manage { margin-top: 4px; padding-top: 9px; border-top: 1px solid var(--line); border-radius: 0 0 7px 7px; color: var(--muted); }
+
+.plugin-name { font-weight: 550; }
+.plugin-name a { color: var(--text); }
+.plugin-id { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+.plugin-desc { color: var(--muted); font-size: 12.5px; margin-top: 2px; max-width: 48ch; }
+.perm-list { display: flex; flex-wrap: wrap; gap: 4px; }
+.perm-list code { font-size: 11.5px; padding: 1px 6px; border-radius: 5px; background: var(--panel-2); border: 1px solid var(--line); }
+.perm-list code.missing { border-color: var(--warn); color: var(--warn); }
+
+.plugin-perms { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.plugin-perms li { display: flex; align-items: baseline; gap: 10px; font-size: 13.5px; }
+.plugin-perms code { font-size: 12px; min-width: 96px; }
+.plugin-perms .missing { color: var(--warn); }
+
+.plugin-ui { padding: 0; overflow: hidden; }
+.plugin-ui iframe { display: block; width: 100%; height: 160px; border: 0; background: var(--panel); color-scheme: light; }
+/* Схема iframe — это prefers-color-scheme для страницы плагина: так она
+   следует теме панели, даже переключённой вручную. */
+:root[data-theme="dark"] .plugin-ui iframe { color-scheme: dark; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .plugin-ui iframe { color-scheme: dark; }
+}
+.plugin-ui .hint { padding: 12px 20px; margin: 0; border-top: 1px solid var(--line); }
+
+.plugin-log {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 12px 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.plugin-log .t { color: var(--faint); margin-right: 8px; }
+
+#plugin-settings-fields { display: grid; gap: 14px; margin-bottom: 14px; max-width: 560px; }
+#plugin-settings-fields .toggle { padding-bottom: 0; }
+#plugin-settings-fields textarea { min-height: 120px; font-family: var(--mono); font-size: 12.5px; }

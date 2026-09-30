@@ -64,6 +64,17 @@ func init() {
 			fairway.Logf("fetch: %d %s", resp.Status, resp.Body)
 			return nil
 		},
+		Call: func(method string, params json.RawMessage) (any, error) {
+			switch method {
+			case "echo":
+				return map[string]any{"echo": params, "greeting": s.Greeting}, nil
+			case "fail":
+				return nil, errors.New("refused by plugin")
+			case "panic":
+				panic("boom")
+			}
+			return nil, errors.New("unknown method " + method)
+		},
 		Event: func(e fairway.Event) error {
 			cfg, err := fairway.GetConfig()
 			if err != nil {

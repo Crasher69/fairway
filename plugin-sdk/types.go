@@ -40,6 +40,10 @@ type Plugin struct {
 	// Event получает события, на которые плагин подписался через
 	// Subscribe (право "events").
 	Event func(Event) error
+	// Call отвечает на вызовы со страницы плагина в панели
+	// (ui/index.html, см. docs/PLUGINS.md). Результат уходит странице
+	// как JSON.
+	Call func(method string, params json.RawMessage) (any, error)
 }
 
 // Event — событие fairway.

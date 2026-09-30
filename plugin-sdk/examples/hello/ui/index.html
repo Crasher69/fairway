@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<!-- Страница плагина в панели. Один файл, стили и скрипт внутри: панель
+     показывает его в изолированном iframe, где есть только window.fairway. -->
+<style>
+  :root { color-scheme: light dark; font: 14px/1.5 system-ui, sans-serif; }
+  body { margin: 0; padding: 20px; background: transparent; }
+  .row { display: flex; gap: 12px; }
+  .tile { flex: 1; padding: 12px 16px; border: 1px solid #8884; border-radius: 10px; }
+  .tile b { display: block; font-size: 22px; }
+  button { margin-top: 14px; font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid #8886; background: none; color: inherit; cursor: pointer; }
+  .error { color: #c22f2f; }
+</style>
+<div class="row">
+  <div class="tile"><span id="l-proxies">Proxies</span><b id="proxies">—</b></div>
+  <div class="tile"><span id="l-lists">Lists</span><b id="lists">—</b></div>
+  <div class="tile"><span id="l-domains">Domains</span><b id="domains">—</b></div>
+</div>
+<button id="refresh">Refresh</button>
+<p class="error" id="error" hidden></p>
+<script>
+  if (fairway.lang === 'ru') {
+    for (const [id, text] of [['l-proxies', 'Прокси'], ['l-lists', 'Листы'], ['l-domains', 'Домены'], ['refresh', 'Обновить']]) {
+      document.getElementById(id).textContent = text;
+    }
+  }
+  async function refresh() {
+    const error = document.getElementById('error');
+    try {
+      const c = await fairway.call('counts');
+      for (const key of ['proxies', 'lists', 'domains']) document.getElementById(key).textContent = c[key];
+      error.hidden = true;
+    } catch (err) {
+      error.textContent = err.message;
+      error.hidden = false;
+    }
+  }
+  document.getElementById('refresh').onclick = refresh;
+  refresh();
+</script>

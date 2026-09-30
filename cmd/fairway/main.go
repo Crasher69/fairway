@@ -246,6 +246,7 @@ func main() {
 	// Плагинам достаётся тот же редактор, что и панели: без файла конфига
 	// (-upstream) менять им нечего, и config.edit ответит ошибкой.
 	plugins.Host.Editor = adminSrv.Editor
+	adminSrv.Plugins = plugins
 	plugins.Apply(cfg)
 	go plugins.Run(ctx)
 	startAdmin(ctx, logger, *adminAddr, adminSrv)

@@ -181,5 +181,7 @@ var ru = map[string]string{
 	"plugins[%d] (%s): settings must be a JSON object":                "plugins[%d] (%s): настройки должны быть JSON-объектом",
 	"plugins[%d]: empty name":                                         "plugins[%d]: пустое имя",
 	"plugins[%d]: plugin %q is listed twice":                          "plugins[%d]: плагин %q указан дважды",
+	"empty method":                                                    "пустой метод",
+	"plugin is not running":                                           "плагин не запущен",
 	"schedule.every: interval %s is shorter than %s":                  "schedule.every: интервал %s короче %s",
 }
