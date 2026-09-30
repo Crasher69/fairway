@@ -237,6 +237,12 @@ plain proxy at once.
 
 Supported upstreams: `http://`, `https://`, `socks5://` and `direct`.
 
+Lists hold proxies by `id`, a UUID that fairway assigns to every proxy itself
+and writes back to the file the first time it reads it. So a proxy can be
+renamed without breaking any list. In a hand-edited file a list may still name
+a proxy: on load the name is replaced with that proxy's `id`, which is also how
+configs from earlier versions move to ids without losing any bindings.
+
 ## Panel
 
 Listens on `127.0.0.1:7771` by default. Two ways in and both work at once:

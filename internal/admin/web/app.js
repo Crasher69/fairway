@@ -986,9 +986,17 @@ function emptyRow(columns, text) {
 }
 
 // listsOf — в каких листах состоит прокси. Без этой колонки непонятно,
-// «работает» прокси или просто заведён и лежит без дела.
-function listsOf(name) {
-  return settings.lists.filter((l) => (l.proxies || []).includes(name)).map((l) => l.name);
+// «работает» прокси или просто заведён и лежит без дела. Листы держат
+// прокси по id, поэтому и ищем по id.
+function listsOf(id) {
+  return settings.lists.filter((l) => (l.proxies || []).includes(id)).map((l) => l.name);
+}
+
+// memberNames — имена прокси листа: в самом листе лежат id, а человеку
+// нужны имена.
+function memberNames(list) {
+  const byID = new Map(settings.proxies.map((p) => [p.id, p.name]));
+  return (list.proxies || []).map((id) => byID.get(id) || id);
 }
 
 // --- прокси ---
@@ -1029,11 +1037,12 @@ function renderProxyTable() {
 
     const name = textCell(p.name);
     name.className = 'name';
+    name.title = 'ID: ' + p.id;
     const host = textCell(p.host);
     host.className = 'name';
 
     const inLists = document.createElement('td');
-    const names = listsOf(p.name);
+    const names = listsOf(p.id);
     if (names.length) {
       inLists.append(...names.map((n) => {
         const tag = document.createElement('span');
@@ -1181,7 +1190,7 @@ function renderListTable() {
     body.replaceChildren(emptyRow(5, t('No lists yet — create the first one')));
     return;
   }
-  const shown = settings.lists.filter((l) => matches(filters.list, l.name, (l.proxies || []).join(' ')));
+  const shown = settings.lists.filter((l) => matches(filters.list, l.name, memberNames(l).join(' ')));
   if (!shown.length) {
     body.replaceChildren(emptyRow(5, t('Nothing matches the search')));
     return;
@@ -1206,7 +1215,7 @@ function renderListTable() {
     }
     tr.append(
       name,
-      textCell((l.proxies || []).join(', ')),
+      textCell(memberNames(l).join(', ')),
       cell((l.proxies || []).length),
       usedCell,
       actionCell(
@@ -1238,7 +1247,7 @@ function renderListMembers(selected) {
   }
 
   const shown = settings.proxies.filter((p) =>
-    chosen.has(p.name) || matches(filters.members, p.name, p.host, p.country, p.comment));
+    chosen.has(p.id) || matches(filters.members, p.name, p.host, p.country, p.comment));
   if (!shown.length) {
     const note = document.createElement('div');
     note.className = 'empty-note';
@@ -1253,8 +1262,8 @@ function renderListMembers(selected) {
 
     const input = document.createElement('input');
     input.type = 'checkbox';
-    input.value = p.name;
-    input.checked = chosen.has(p.name);
+    input.value = p.id;
+    input.checked = chosen.has(p.id);
     input.onchange = () => {
       row.classList.toggle('checked', input.checked);
       updateMembersCount();

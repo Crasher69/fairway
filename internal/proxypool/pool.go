@@ -82,6 +82,7 @@ func New(cfg *config.Config) (*Pool, error) {
 // сохраняют состояние — активные соединения не теряются при hot-reload.
 func (p *Pool) Apply(cfg *config.Config) error {
 	proxies := make(map[string]*Proxy, len(cfg.Proxies))
+	byID := make(map[string]*Proxy, len(cfg.Proxies)) // листы ссылаются на прокси по id
 
 	p.mu.RLock()
 	previous := p.proxies
@@ -94,16 +95,17 @@ func (p *Pool) Apply(cfg *config.Config) error {
 		}
 		if old, ok := previous[pc.Name]; ok && old.Upstream.Name == up.Name {
 			proxies[pc.Name] = old // тот же прокси — сохраняем счётчики
-			continue
+		} else {
+			proxies[pc.Name] = &Proxy{Name: pc.Name, Upstream: up}
 		}
-		proxies[pc.Name] = &Proxy{Name: pc.Name, Upstream: up}
+		byID[pc.ID] = proxies[pc.Name]
 	}
 
 	lists := make(map[string][]*Proxy, len(cfg.Lists))
 	for _, lc := range cfg.Lists {
 		members := make([]*Proxy, 0, len(lc.Proxies))
 		for _, ref := range lc.Proxies {
-			pr, ok := proxies[ref]
+			pr, ok := byID[ref]
 			if !ok {
 				return i18n.Errorf("list %s references unknown proxy %q", lc.Name, ref)
 			}
