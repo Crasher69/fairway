@@ -1,5 +1,7 @@
 package forward
 
+import "time"
+
 // Route — выбранный под запрос маршрут: через какой апстрим идём и что с ним
 // делать. Release обязателен к вызову по завершении запроса — на нём держатся
 // счётчики параллелизма в пуле.
@@ -13,6 +15,10 @@ type Route struct {
 	ID string
 	// MITM — расшифровывать ли TLS. Используется начиная с этапа 4.
 	MITM bool
+	// ConnectTimeout и ResponseTimeout — таймауты из правила домена.
+	// Ноль — взять у сервера.
+	ConnectTimeout  time.Duration
+	ResponseTimeout time.Duration
 	// Release освобождает ресурсы пула. Может быть nil.
 	Release func()
 }

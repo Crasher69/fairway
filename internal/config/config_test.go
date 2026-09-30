@@ -47,16 +47,18 @@ func TestParseRejects(t *testing.T) {
 		"битый JSON":       `{`,
 		"дубль прокси": `{"proxies":[{"name":"p","url":"http://1.1.1.1:80"},
 		                              {"name":"p","url":"http://2.2.2.2:80"}]}`,
-		"пустое имя прокси":   `{"proxies":[{"name":"","url":"http://1.1.1.1:80"}]}`,
-		"плохой url":          `{"proxies":[{"name":"p","url":"ftp://1.1.1.1:21"}]}`,
-		"лист в никуда":       `{"lists":[{"name":"l","proxies":["нет"]}]}`,
-		"пустой лист":         `{"lists":[{"name":"l","proxies":[]}]}`,
-		"домен без листа":     `{"domains":[{"pattern":"a.com","list":""}]}`,
-		"домен в никуда":      `{"domains":[{"pattern":"a.com","list":"нет"}]}`,
-		"defaults в никуда":   `{"defaults":{"list":"нет"}}`,
-		"кривой паттерн":      `{"proxies":[{"name":"p","url":"http://1.1.1.1:80"}],"lists":[{"name":"l","proxies":["p"]}],"domains":[{"pattern":"a.*.com","list":"l"}]}`,
-		"кривая длительность": `{"defaults":{"ban_duration":"пять минут"}}`,
-		"лимит меньше -1":     `{"proxies":[{"name":"p","url":"http://1.1.1.1:80"}],"lists":[{"name":"l","proxies":["p"]}],"domains":[{"pattern":"a.com","list":"l","max_conns_per_proxy":-5}]}`,
+		"пустое имя прокси":            `{"proxies":[{"name":"","url":"http://1.1.1.1:80"}]}`,
+		"плохой url":                   `{"proxies":[{"name":"p","url":"ftp://1.1.1.1:21"}]}`,
+		"лист в никуда":                `{"lists":[{"name":"l","proxies":["нет"]}]}`,
+		"пустой лист":                  `{"lists":[{"name":"l","proxies":[]}]}`,
+		"домен без листа":              `{"domains":[{"pattern":"a.com","list":""}]}`,
+		"домен в никуда":               `{"domains":[{"pattern":"a.com","list":"нет"}]}`,
+		"defaults в никуда":            `{"defaults":{"list":"нет"}}`,
+		"кривой паттерн":               `{"proxies":[{"name":"p","url":"http://1.1.1.1:80"}],"lists":[{"name":"l","proxies":["p"]}],"domains":[{"pattern":"a.*.com","list":"l"}]}`,
+		"кривая длительность":          `{"defaults":{"ban_duration":"пять минут"}}`,
+		"лимит меньше -1":              `{"proxies":[{"name":"p","url":"http://1.1.1.1:80"}],"lists":[{"name":"l","proxies":["p"]}],"domains":[{"pattern":"a.com","list":"l","max_conns_per_proxy":-5}]}`,
+		"отрицательный таймаут":        `{"defaults":{"connect_timeout":"-1s"}}`,
+		"отрицательный таймаут домена": `{"proxies":[{"name":"p","url":"http://1.1.1.1:80"}],"lists":[{"name":"l","proxies":["p"]}],"domains":[{"pattern":"a.com","list":"l","response_timeout":"-1s"}]}`,
 	}
 	for name, raw := range tests {
 		if cfg, err := Parse([]byte(raw)); err == nil {
@@ -142,7 +144,7 @@ func TestSaveOmitsInheritedZeros(t *testing.T) {
 	// справочный блок, по которому человек и понимает, что вообще бывает.
 	text := string(raw)
 	domains := text[strings.Index(text, `"domains"`):]
-	for _, unwanted := range []string{`"ban_duration"`, `"max_conns_per_proxy"`, `"max_parallel_proxies"`} {
+	for _, unwanted := range []string{`"ban_duration"`, `"max_conns_per_proxy"`, `"max_parallel_proxies"`, `"connect_timeout"`, `"response_timeout"`} {
 		if strings.Contains(domains, unwanted) {
 			t.Errorf("в сохранённом правиле домена появился %s:\n%s", unwanted, domains)
 		}
@@ -229,5 +231,34 @@ func TestProxyValidation(t *testing.T) {
 	}
 	if cfg.Proxies[0].Scheme != "http" {
 		t.Errorf("схема по умолчанию = %q, ожидалась http", cfg.Proxies[0].Scheme)
+	}
+}
+
+// TestTimeoutsFilledIn — у старого конфига таймаутов нет: при загрузке в
+// defaults появляются значения по умолчанию, и файл переписывается, чтобы
+// их было видно.
+func TestTimeoutsFilledIn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"defaults":{"allow_direct":true}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Defaults.ConnectTimeout.Duration() != DefaultConnectTimeout || cfg.Defaults.ResponseTimeout.Duration() != DefaultResponseTimeout {
+		t.Errorf("таймауты не подставлены: %+v", cfg.Defaults)
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), `"connect_timeout": "15s"`) || !strings.Contains(string(raw), `"response_timeout": "1m0s"`) {
+		t.Errorf("таймауты не записаны в файл:\n%s", raw)
+	}
+
+	own, err := Parse([]byte(`{"defaults":{"connect_timeout":"5s","response_timeout":"3m"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if own.Defaults.ConnectTimeout.Duration() != 5*time.Second || own.Defaults.ResponseTimeout.Duration() != 3*time.Minute {
+		t.Errorf("свои таймауты перебиты: %+v", own.Defaults)
 	}
 }

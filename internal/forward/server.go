@@ -40,8 +40,12 @@ type Server struct {
 	// OriginTLS — шаблон настроек TLS для соединения с целью в режиме MITM.
 	// Обычно nil: сертификат цели проверяется по системным корням.
 	OriginTLS *tls.Config
-	// DialTimeout ограничивает установку соединения с целью через апстрим.
+	// DialTimeout ограничивает установку соединения с целью через апстрим,
+	// когда в правиле домена таймаут не задан (см. Route.ConnectTimeout).
 	DialTimeout time.Duration
+	// ResponseTimeout — сколько ждать первого байта ответа цели, когда в
+	// правиле домена таймаут не задан. 0 — DefaultResponseTimeout.
+	ResponseTimeout time.Duration
 	// ReplayBodyLimit — до какого размера тело запроса в режиме MITM
 	// буферизуется в памяти, чтобы запрос можно было повторить, если цель
 	// закрыла keep-alive соединение. 0 означает DefaultReplayBodyLimit,
@@ -69,6 +73,10 @@ type Hooks interface {
 }
 
 const defaultDialTimeout = 15 * time.Second
+
+// DefaultResponseTimeout — сколько ждать первого байта ответа, если ни
+// правило, ни сервер не задали своё.
+const DefaultResponseTimeout = 60 * time.Second
 
 // DefaultReplayBodyLimit — 1 МиБ: покрывает формы, JSON и мелкие загрузки,
 // а большой файл держать в памяти ради редкого повтора незачем.
@@ -204,11 +212,13 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Ждём первый байт от цели. Если его нет, а клиент что-то прислал,
 	// прокси для этого запроса провалился, и клиентские байты уходят
-	// через другой.
+	// через другой. Ждём столько же, сколько подключения: в туннеле
+	// первым приходит ответ TLS-рукопожатия, а не страница, и долго
+	// думающий сайт его не задерживает.
 	buf := make([]byte, 32<<10)
 	var n int
 	for {
-		_ = upConn.SetReadDeadline(time.Now().Add(s.dialTimeout()))
+		_ = upConn.SetReadDeadline(time.Now().Add(s.connectTimeout(route)))
 		var rerr error
 		n, rerr = upConn.Read(buf)
 		if n > 0 {
@@ -226,7 +236,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 			finish()
 			return
 		}
-		sample.Err = tunnelError(rerr, s.dialTimeout())
+		sample.Err = tunnelError(rerr, s.connectTimeout(route))
 		sample.Duration = time.Since(started)
 		s.observe(sample)
 		if !replayable {
@@ -289,7 +299,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 // dialTunnel открывает соединение с целью через маршрут и записывает в
 // замер время подключения, а при неудаче — ошибку.
 func (s *Server) dialTunnel(ctx context.Context, route *Route, target string, sample *Sample) (net.Conn, error) {
-	ctx, cancel := context.WithTimeout(ctx, s.dialTimeout())
+	ctx, cancel := context.WithTimeout(ctx, s.connectTimeout(route))
 	defer cancel()
 	dialStart := time.Now()
 	conn, err := route.Upstream.DialTarget(ctx, target)
@@ -436,11 +446,31 @@ func (s *Server) forwardHTTP(route *Route, r *http.Request, sample *Sample) (*ht
 		},
 		GotFirstResponseByte: func() { firstByte = time.Now() },
 	}
-	outReq := r.Clone(httptrace.WithClientTrace(r.Context(), trace))
+	// Таймаут ответа у каждого домена свой, а пул соединений один на
+	// апстрим, поэтому ResponseHeaderTimeout транспорта не годится: ждём
+	// заголовков сами и отменяем запрос, если их нет. Таймаут подключения
+	// транспорт берёт из контекста.
+	wait := s.responseTimeout(route)
+	ctx, cancel := context.WithCancel(withConnectTimeout(r.Context(), s.connectTimeout(route)))
+	timer := time.AfterFunc(wait, cancel)
+	outReq := r.Clone(httptrace.WithClientTrace(ctx, trace))
 	outReq.RequestURI = ""
 	removeHopByHop(outReq.Header)
 
 	resp, err := route.Upstream.Transport(s.dialTimeout()).RoundTrip(outReq)
+	if !timer.Stop() && r.Context().Err() == nil {
+		// Сработал таймер, а не ушёл клиент: ответа не дождались.
+		if err == nil {
+			resp.Body.Close()
+		}
+		err = i18n.Errorf("no reply from target within %s", wait)
+	}
+	if err != nil {
+		cancel()
+	} else {
+		// Контекст запроса живёт, пока читается тело ответа.
+		resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
+	}
 	sample.Reused = reused
 	if !reused && !dialStart.IsZero() {
 		end := gotConn
@@ -457,6 +487,25 @@ func (s *Server) forwardHTTP(route *Route, r *http.Request, sample *Sample) (*ht
 		sample.TTFB = firstByte.Sub(gotConn)
 	}
 	return resp, nil
+}
+
+// connectTimeout — таймаут подключения к цели через этот маршрут.
+func (s *Server) connectTimeout(route *Route) time.Duration {
+	if route != nil && route.ConnectTimeout > 0 {
+		return route.ConnectTimeout
+	}
+	return s.dialTimeout()
+}
+
+// responseTimeout — сколько ждать первого байта ответа цели.
+func (s *Server) responseTimeout(route *Route) time.Duration {
+	switch {
+	case route != nil && route.ResponseTimeout > 0:
+		return route.ResponseTimeout
+	case s.ResponseTimeout > 0:
+		return s.ResponseTimeout
+	}
+	return DefaultResponseTimeout
 }
 
 func (s *Server) dialTimeout() time.Duration {

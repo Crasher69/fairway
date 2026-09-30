@@ -360,3 +360,53 @@ func TestHTTPClientAbortIsNotProxyFailure(t *testing.T) {
 		t.Fatal("замер так и не снят")
 	}
 }
+
+// TestHTTPResponseTimeoutFromRoute — ответа ждут столько, сколько задано
+// в правиле домена, а не сколько у сервера.
+func TestHTTPResponseTimeoutFromRoute(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		io.WriteString(w, "done")
+	}))
+	defer target.Close()
+	direct, _ := ParseUpstream("direct")
+
+	for _, tc := range []struct {
+		wait time.Duration
+		ok   bool
+	}{{100 * time.Millisecond, false}, {2 * time.Second, true}} {
+		var (
+			mu     sync.Mutex
+			errors []error
+		)
+		proxySrv := httptest.NewServer(&Server{
+			ResponseTimeout: 10 * time.Millisecond, // перебивается маршрутом
+			Pick: func(string, []string) (*Route, error) {
+				return &Route{Upstream: direct, Name: "direct", ResponseTimeout: tc.wait}, nil
+			},
+			Observe: func(s Sample) {
+				mu.Lock()
+				errors = append(errors, s.Err)
+				mu.Unlock()
+			},
+		})
+		proxyURL, _ := url.Parse(proxySrv.URL)
+		client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+		resp, err := client.Get(target.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		proxySrv.Close()
+
+		if got := resp.StatusCode == http.StatusOK && string(body) == "done"; got != tc.ok {
+			t.Errorf("ожидание %s: статус %d, тело %q", tc.wait, resp.StatusCode, body)
+		}
+		mu.Lock()
+		if !tc.ok && (len(errors) == 0 || errors[0] == nil || !strings.Contains(errors[0].Error(), "no reply")) {
+			t.Errorf("ожидание %s: замер без ошибки таймаута: %v", tc.wait, errors)
+		}
+		mu.Unlock()
+	}
+}

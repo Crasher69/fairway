@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -50,10 +51,8 @@ func (u *Upstream) Transport(dialTimeout time.Duration) *http.Transport {
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   dialTimeout,
 			ExpectContinueTimeout: time.Second,
-			// Прокси, который принял запрос и молчит, иначе держал бы
-			// клиента вечно и не давал ни ошибки, ни замера — та же беда,
-			// что у туннеля без первого байта.
-			ResponseHeaderTimeout: dialTimeout,
+			// Ожидание ответа ограничивает Server.forwardHTTP: таймаут у
+			// каждого домена свой, а транспорт общий.
 			// HTTP/2 к цели не разбираем — замеры считаются по HTTP/1.1.
 			ForceAttemptHTTP2: false,
 			TLSNextProto:      map[string]func(string, *tls.Conn) http.RoundTripper{},
@@ -67,11 +66,15 @@ func (u *Upstream) Transport(dialTimeout time.Duration) *http.Transport {
 				proxyURL.User = url.UserPassword(u.User, u.Pass)
 			}
 			tr.Proxy = http.ProxyURL(proxyURL)
-			tr.DialContext = dialer.DialContext
+			tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				ctx, cancel := context.WithTimeout(ctx, connectTimeoutFrom(ctx, dialTimeout))
+				defer cancel()
+				return dialer.DialContext(ctx, network, addr)
+			}
 		default:
 			// socks5 и direct: соединение до цели прокладываем сами.
 			tr.DialContext = func(ctx context.Context, _, addr string) (net.Conn, error) {
-				ctx, cancel := context.WithTimeout(ctx, dialTimeout)
+				ctx, cancel := context.WithTimeout(ctx, connectTimeoutFrom(ctx, dialTimeout))
 				defer cancel()
 				return u.DialTarget(ctx, addr)
 			}
@@ -259,4 +262,31 @@ func (c *bufferedConn) Read(b []byte) (int, error) {
 		return n, nil
 	}
 	return c.Conn.Read(b)
+}
+
+// connectTimeoutKey — таймаут подключения в контексте запроса: транспорт
+// один на апстрим, а таймаут у каждого домена свой.
+type connectTimeoutKey struct{}
+
+func withConnectTimeout(ctx context.Context, d time.Duration) context.Context {
+	return context.WithValue(ctx, connectTimeoutKey{}, d)
+}
+
+func connectTimeoutFrom(ctx context.Context, def time.Duration) time.Duration {
+	if d, ok := ctx.Value(connectTimeoutKey{}).(time.Duration); ok && d > 0 {
+		return d
+	}
+	return def
+}
+
+// cancelOnClose отменяет контекст запроса, когда тело ответа закрыто.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnClose) Close() error {
+	err := c.ReadCloser.Close()
+	c.cancel()
+	return err
 }
