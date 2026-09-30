@@ -28,8 +28,11 @@ jobs:
       - name: build
         run: sh build.sh "${GITHUB_REF_NAME#v}"
 
+      - name: installer
+        run: install -m 755 install.sh dist/install.sh
+
       - name: checksums
-        run: cd dist && sha256sum fairway-* > SHA256SUMS
+        run: cd dist && sha256sum fairway-* install.sh > SHA256SUMS
 
       - name: release
         env:
