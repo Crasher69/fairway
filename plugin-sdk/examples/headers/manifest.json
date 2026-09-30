@@ -1,0 +1,29 @@
+{
+  "name": "headers",
+  "version": "0.1.0",
+  "title": "Headers",
+  "description": "Adds a header to every request going through the proxy.",
+  "kind": "hook",
+  "permissions": [
+    "requests"
+  ],
+  "hooks": {
+    "domains": ["*"],
+    "request": true
+  },
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "title": "Header",
+        "default": "X-Via"
+      },
+      "value": {
+        "type": "string",
+        "title": "Value",
+        "default": "fairway"
+      }
+    }
+  }
+}

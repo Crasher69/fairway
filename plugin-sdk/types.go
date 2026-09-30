@@ -27,6 +27,7 @@ package fairway
 
 import (
 	"encoding/json"
+	"net/textproto"
 	"time"
 )
 
@@ -44,6 +45,68 @@ type Plugin struct {
 	// (ui/index.html, см. docs/PLUGINS.md). Результат уходит странице
 	// как JSON.
 	Call func(method string, params json.RawMessage) (any, error)
+
+	// OnRequest вызывается на запрос через прокси до отправки цели (вид
+	// плагина "hook", hooks.request в манифесте). Запрос можно менять на
+	// месте. Вернуть ответ — ответить клиенту самому, запрос никуда не
+	// уйдёт. Ошибка — запрос идёт без правки этого плагина.
+	//
+	// Запросы обслуживают отдельные экземпляры плагина, по нескольку
+	// сразу, и у каждого своя память: состояние, которое меняют Tick или
+	// Call, в OnRequest не видно. Init вызывается и в них — с теми же
+	// настройками.
+	OnRequest func(req *HTTPRequest) (*HTTPResponse, error)
+	// OnResponse вызывается на ответ цели (hooks.response). Ответ можно
+	// менять на месте; req — запрос, как он ушёл, без тела.
+	OnResponse func(req *HTTPRequest, resp *HTTPResponse) error
+}
+
+// Header — заголовки HTTP. Имена в каноническом виде: Content-Type.
+type Header map[string][]string
+
+// Get — первое значение заголовка.
+func (h Header) Get(name string) string {
+	if v := h[textproto.CanonicalMIMEHeaderKey(name)]; len(v) > 0 {
+		return v[0]
+	}
+	return ""
+}
+
+// Set заменяет заголовок одним значением.
+func (h Header) Set(name, value string) {
+	h[textproto.CanonicalMIMEHeaderKey(name)] = []string{value}
+}
+
+// Add добавляет значение заголовка.
+func (h Header) Add(name, value string) {
+	key := textproto.CanonicalMIMEHeaderKey(name)
+	h[key] = append(h[key], value)
+}
+
+// Del удаляет заголовок.
+func (h Header) Del(name string) { delete(h, textproto.CanonicalMIMEHeaderKey(name)) }
+
+// HTTPRequest — запрос через прокси. Менять можно метод, путь и query в
+// URL (но не схему и хост), заголовки и тело. Host, Content-Length и
+// Transfer-Encoding fairway выставляет сам.
+type HTTPRequest struct {
+	Method string `json:"method"`
+	// URL — полный, с хостом; порт — только нестандартный.
+	URL     string `json:"url"`
+	Headers Header `json:"headers"`
+	// Body есть, только если в манифесте hooks.body: true и тело не
+	// больше 8 МиБ. Иначе BodySkipped, и правка тела не действует.
+	Body        []byte `json:"body,omitempty"`
+	BodySkipped bool   `json:"body_skipped,omitempty"`
+}
+
+// HTTPResponse — ответ цели или ответ плагина вместо неё. Тело, сжатое
+// gzip или deflate, приходит уже распакованным.
+type HTTPResponse struct {
+	Status      int    `json:"status"`
+	Headers     Header `json:"headers"`
+	Body        []byte `json:"body,omitempty"`
+	BodySkipped bool   `json:"body_skipped,omitempty"`
 }
 
 // Event — событие fairway.

@@ -2,8 +2,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"net/url"
+	"os"
+	"strings"
 	"time"
 
 	fairway "github.com/Crasher69/fairway/plugin-sdk"
@@ -74,6 +78,54 @@ func init() {
 				panic("boom")
 			}
 			return nil, errors.New("unknown method " + method)
+		},
+		OnRequest: func(req *fairway.HTTPRequest) (*fairway.HTTPResponse, error) {
+			u, err := url.Parse(req.URL)
+			if err != nil {
+				return nil, err
+			}
+			switch u.Path {
+			case "/blocked":
+				return &fairway.HTTPResponse{Status: 403, Headers: fairway.Header{"Content-Type": {"text/plain"}},
+					Body: []byte("blocked by " + s.Greeting)}, nil
+			case "/fail":
+				return nil, errors.New("refused by plugin")
+			case "/slow":
+				time.Sleep(time.Minute)
+			case "/crash":
+				os.Exit(3)
+			case "/host":
+				u.Host = "elsewhere.test"
+				req.URL = u.String()
+				return nil, nil
+			case "/rewrite":
+				u.Path, u.RawQuery = "/rewritten", "by=plugin"
+				req.URL = u.String()
+				req.Method = "PUT"
+			}
+			req.Headers.Set("X-Greeting", s.Greeting)
+			req.Headers.Del("X-Secret")
+			if req.Headers.Get("Proxy-Authorization") != "" {
+				req.Headers.Set("X-Leak", "proxy-authorization")
+			}
+			if req.BodySkipped {
+				req.Headers.Set("X-Body", "skipped")
+			} else if len(req.Body) > 0 {
+				req.Body = bytes.ToUpper(req.Body)
+			}
+			return nil, nil
+		},
+		OnResponse: func(req *fairway.HTTPRequest, resp *fairway.HTTPResponse) error {
+			resp.Headers.Set("X-Seen", req.Method+" "+req.URL)
+			if resp.Status == 404 {
+				resp.Status = 200
+			}
+			if resp.BodySkipped {
+				resp.Headers.Set("X-Body", "skipped")
+			} else {
+				resp.Body = []byte(strings.ReplaceAll(string(resp.Body), "world", s.Greeting))
+			}
+			return nil
 		},
 		Event: func(e fairway.Event) error {
 			cfg, err := fairway.GetConfig()

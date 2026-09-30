@@ -29,11 +29,18 @@
 // плагина в панели. Ответ плагина — {"error":"..."} или {}, на call —
 // ещё и {"result":...}.
 //
+// Плагину вида hook приходят ещё {"type":"request","request":{...}} и
+// {"type":"response","request":{...},"response":{...}} — запрос, идущий
+// через прокси, и ответ на него. Их обслуживают отдельные экземпляры
+// модуля (см. hooks.go); в result плагин возвращает правку, форматы —
+// hookRequest, hookResponse и hookReply.
+//
 // Вызовы плагина хосту (call): {"method":"...","params":{...}}, ответ —
 // {"result":...} или {"error":"..."}. Методы — в host.go.
 //
 // Вызовы идут строго по одному: у каждого плагина своя горутина, свой
-// экземпляр модуля и свой рантайм.
+// экземпляр модуля и свой рантайм. У плагина hook сверх того несколько
+// экземпляров для запросов, каждый тоже вызывается строго по одному.
 package plugin
 
 import (
@@ -56,6 +63,9 @@ const (
 	messageTick  = "tick"
 	messageEvent = "event"
 	messageCall  = "call"
+
+	messageRequest  = "request"
+	messageResponse = "response"
 )
 
 type guestMessage struct {
@@ -64,6 +74,8 @@ type guestMessage struct {
 	Event    *events.Event   `json:"event,omitempty"`
 	Method   string          `json:"method,omitempty"`
 	Params   json.RawMessage `json:"params,omitempty"`
+	Request  *hookRequest    `json:"request,omitempty"`
+	Response *hookResponse   `json:"response,omitempty"`
 }
 
 type guestReply struct {

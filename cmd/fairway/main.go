@@ -178,6 +178,7 @@ func main() {
 		*pluginsDir = filepath.Join(*dataDir, "plugins")
 	}
 	plugins := plugin.NewManager(*pluginsDir, plugin.Host{Config: readConfig, Bus: bus}, logger)
+	srv.Hooks = plugins
 	// Скомпилированные модули кешируются на диске: иначе каждый запуск
 	// fairway платил бы секундами компиляции за каждый плагин.
 	if cache, err := wazero.NewCompilationCacheWithDir(filepath.Join(*dataDir, "plugin-cache")); err == nil {

@@ -78,6 +78,15 @@ func (s *Server) mitmTunnel(w http.ResponseWriter, route *Route, target string) 
 			return up.route // клиент закрыл соединение или прислал мусор
 		}
 
+		if s.Hooks != nil {
+			if answered, keep := s.hookAnswer(clientTLS, req, target, domain); answered {
+				if !keep {
+					return up.route
+				}
+				continue
+			}
+		}
+
 		sample := s.roundTrip(up, clientTLS, clientReader, req, domain)
 		s.observe(sample)
 
@@ -86,6 +95,33 @@ func (s *Server) mitmTunnel(w http.ResponseWriter, route *Route, target string) 
 			return up.route
 		}
 	}
+}
+
+// hookAnswer даёт плагинам посмотреть и поправить расшифрованный запрос.
+// answered — плагин ответил сам, и ответ уже у клиента; keep — соединение
+// с клиентом можно читать дальше.
+func (s *Server) hookAnswer(client net.Conn, req *http.Request, target, domain string) (answered, keep bool) {
+	// Плагину — полный URL, как в обычном HTTP-прокси.
+	req.URL.Scheme = "https"
+	req.URL.Host = target
+	resp := s.Hooks.OnRequest(domain, req)
+	if resp == nil {
+		return false, false
+	}
+	defer resp.Body.Close()
+	// Недочитанное тело запроса легло бы в начало следующего; большое
+	// дочитывать незачем — проще закрыть соединение.
+	drained := true
+	if req.Body != nil {
+		n, err := io.Copy(io.Discard, io.LimitReader(req.Body, DefaultReplayBodyLimit+1))
+		drained = err == nil && n <= DefaultReplayBodyLimit
+		req.Body.Close()
+	}
+	resp.Close = resp.Close || req.Close || !drained
+	if err := resp.Write(client); err != nil {
+		return true, false
+	}
+	return true, !resp.Close
 }
 
 // isUpgrade распознаёт запрос на смену протокола (WebSocket).
@@ -216,6 +252,14 @@ func (s *Server) roundTrip(up *mitmUpstream, client net.Conn, clientReader *bufi
 		return sample
 	}
 
+	// Заслон распознаётся по тому, что прислала цель, а не по тому, во
+	// что его превратил плагин.
+	status, header := resp.StatusCode, resp.Header
+	if s.Hooks != nil {
+		header = resp.Header.Clone()
+		s.Hooks.OnResponse(domain, req, resp)
+	}
+
 	// Начало тела запоминается по дороге к клиенту: по нему видно, не
 	// подсунул ли сайт вместо содержимого страницу проверки.
 	counted := &countingReader{r: resp.Body}
@@ -228,7 +272,7 @@ func (s *Server) roundTrip(up *mitmUpstream, client net.Conn, clientReader *bufi
 	}
 	sample.Bytes = counted.n
 	sample.Duration = time.Since(started)
-	sample.Challenge = challenge.Detect(resp.StatusCode, resp.Header,
+	sample.Challenge = challenge.Detect(status, header,
 		challenge.Decode(resp.Header.Get("Content-Encoding"), sniff.buf))
 
 	if resp.Close {

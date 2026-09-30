@@ -42,6 +42,10 @@ type instance struct {
 	logger   *log.Logger
 	journal  *journal
 
+	// hooks — экземпляры для обработки запросов, у плагина вида hook.
+	// Поднимаются после init основного экземпляра.
+	hooks *hookPool
+
 	// calls — вызовы со страницы плагина в панели. Их выполняет горутина
 	// плагина между таймером и событиями: модуль однопоточный.
 	calls chan *uiCall
@@ -106,12 +110,17 @@ func newInstance(m *Manifest, entry config.Plugin, host *Host, logger *log.Logge
 }
 
 func (in *instance) logf(format string, args ...any) {
+	pluginLogf(in.logger, in.journal, in.manifest.Name, format, args...)
+}
+
+// pluginLogf пишет строку в лог fairway с именем плагина и в его журнал.
+func pluginLogf(logger *log.Logger, j *journal, name, format string, args ...any) {
 	line := fmt.Sprintf(format, args...)
-	if in.journal != nil {
-		in.journal.add(line)
+	if j != nil {
+		j.add(line)
 	}
-	if in.logger != nil {
-		in.logger.Printf(i18n.T("plugin %s: ")+"%s", in.manifest.Name, line)
+	if logger != nil {
+		logger.Printf(i18n.T("plugin %s: ")+"%s", name, line)
 	}
 }
 
@@ -290,6 +299,10 @@ func (in *instance) run(ctx context.Context, dir string) {
 	}
 	in.setState(StateRunning, nil)
 	in.logf("%s", i18n.T("started"))
+	if in.hooks != nil {
+		in.hooks.start(ctx)
+		defer in.hooks.stop()
+	}
 
 	var (
 		ticker      *time.Ticker

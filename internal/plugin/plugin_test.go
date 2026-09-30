@@ -47,6 +47,8 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	minTick = 50 * time.Millisecond
+	hookWorkers = 2
+	hookLogEvery = 0
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)
