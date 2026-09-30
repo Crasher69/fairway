@@ -60,7 +60,7 @@ func (w *Watcher) Run(ctx context.Context, onChange func(*Config), onError func(
 }
 
 // poll делает один шаг слежения: сравнивает штамп, читает файл. Под
-// блокировкой, чтобы не разойтись с MarkApplied.
+// блокировкой, чтобы не разойтись с Write.
 func (w *Watcher) poll(onError func(error)) (*Config, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -91,16 +91,21 @@ func (w *Watcher) poll(onError func(error)) (*Config, bool) {
 	return cfg, true
 }
 
-// MarkApplied сообщает сторожу, что текущая версия файла уже применена.
-// Вызывается после записи из панели: та сохраняет и применяет конфиг сама,
-// и без этой метки сторож увидел бы «чужое» изменение и применил его ещё
-// раз — лишняя работа и лишняя строка «конфиг перечитан» в логе.
-func (w *Watcher) MarkApplied() {
+// Write записывает файл под замком сторожа и отмечает записанное как уже
+// применённое. Так пишет панель: она сохраняет и применяет конфиг сама, и
+// без отметки сторож увидел бы «чужое» изменение и применил его ещё раз.
+// Отметка — под тем же замком, что запись: иначе опрос мог вклиниться
+// между ними.
+func (w *Watcher) Write(save func() error) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if err := save(); err != nil {
+		return err
+	}
 	if current, err := stamp(w.path); err == nil {
 		w.last = current
 	}
+	return nil
 }
 
 // stamp — дешёвая подпись файла: время изменения и размер.

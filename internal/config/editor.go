@@ -19,10 +19,11 @@ type Editor struct {
 	Current func() *Config
 	// Apply применяет новый конфиг к живому пулу.
 	Apply func(*Config) error
-	// Saved вызывается сразу после записи файла — сторожу конфига, чтобы он
-	// не принял нашу же запись за чужую правку и не применил её второй раз.
-	// Может быть nil.
-	Saved func()
+	// Write, если задан, выполняет запись файла. Это сторож конфига
+	// (Watcher.Write): он пишет под своим замком и отмечает запись
+	// применённой, чтобы не принять её за чужую правку и не применить
+	// второй раз. Может быть nil.
+	Write func(save func() error) error
 
 	mu sync.Mutex
 }
@@ -49,11 +50,13 @@ func (e *Editor) Edit(change func(*Config) error) (*Config, error) {
 	if err := next.Validate(); err != nil {
 		return nil, err
 	}
-	if err := next.Save(e.Path); err != nil {
+	save := func() error { return next.Save(e.Path) }
+	if e.Write != nil {
+		if err := e.Write(save); err != nil {
+			return nil, err
+		}
+	} else if err := save(); err != nil {
 		return nil, err
-	}
-	if e.Saved != nil {
-		e.Saved()
 	}
 	if err := e.Apply(next); err != nil {
 		return nil, err
