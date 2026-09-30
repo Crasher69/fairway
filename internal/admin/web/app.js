@@ -801,15 +801,27 @@ const plugins = {
 
 // Что значит каждое право — человеческими словами. Их видят при включении
 // плагина, поэтому формулировки про то, что плагин сможет сделать.
-function permissionText(perm, hosts) {
+function permissionText(perm, p) {
+  const hosts = p.http_hosts;
   switch (perm) {
     case 'config.read': return t('read proxies, lists and domains (with proxy passwords)');
     case 'config.write': return t('change proxies, lists and domains');
     case 'events': return t('receive events: config applied, proxy banned');
     case 'schedule': return t('run on a timer');
     case 'http.fetch': return t('make HTTP requests to: {hosts}', { hosts: (hosts || []).join(', ') || '—' });
+    case 'requests': return hooksText(p.hooks || {});
     default: return perm;
   }
+}
+
+// hooksText — какие запросы видит и меняет плагин вида hook.
+function hooksText(h) {
+  const domains = (h.domains || []).map((d) => (d === '*' ? t('all sites') : d)).join(', ') || '—';
+  let text;
+  if (h.request && h.response) text = t('see and change requests and responses to: {domains}', { domains });
+  else if (h.response) text = t('see and change responses from: {domains}', { domains });
+  else text = t('see and change requests to: {domains}', { domains });
+  return h.body ? text + ' ' + t('(including bodies)') : text;
 }
 
 const PLUGIN_STATES = {
@@ -895,7 +907,7 @@ window.addEventListener('scroll', () => setPluginsMenu(false), { passive: true }
 function askPermissions(p) {
   const perms = p.permissions || [];
   if (!perms.length) return true;
-  const lines = perms.map((perm) => '• ' + permissionText(perm, p.http_hosts));
+  const lines = perms.map((perm) => '• ' + permissionText(perm, p));
   return window.confirm(t('Plugin “{name}” will be able to:', { name: pluginTitle(p) }) + '\n\n' + lines.join('\n'));
 }
 
@@ -977,7 +989,7 @@ function renderPluginsTable() {
     for (const perm of p.permissions || []) {
       const code = document.createElement('code');
       code.textContent = perm;
-      code.title = permissionText(perm, p.http_hosts);
+      code.title = permissionText(perm, p);
       if (p.enabled && missing.has(perm)) code.className = 'missing';
       permList.append(code);
     }
@@ -1072,7 +1084,7 @@ function renderPluginPerms(p) {
     const code = document.createElement('code');
     code.textContent = perm;
     const text = document.createElement('span');
-    text.textContent = permissionText(perm, p.http_hosts);
+    text.textContent = permissionText(perm, p);
     li.append(code, text);
     if (p.enabled && missing.has(perm)) {
       const note = document.createElement('span');

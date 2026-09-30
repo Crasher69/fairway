@@ -285,7 +285,9 @@ upstreams there is no other way.
 ## Plugins
 
 Plugins are WebAssembly modules that fairway runs in a sandbox on any OS:
-syncing proxies with a provider's API, reacting to bans, editing lists. Each
+syncing proxies with a provider's API, reacting to bans, editing lists.
+Hook plugins also see and change requests going through the proxy: headers,
+path, bodies, or answer on their own (plain HTTP and MITM domains). Each
 plugin gets only the permissions its manifest asks for and you grant. How to
 install and write one: [docs/PLUGINS.md](docs/PLUGINS.md) (in Russian for now).
 

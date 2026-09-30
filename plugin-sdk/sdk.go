@@ -3,6 +3,7 @@
 package fairway
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,6 +45,78 @@ type message struct {
 	Event    *Event          `json:"event"`
 	Method   string          `json:"method"`
 	Params   json.RawMessage `json:"params"`
+	Request  *HTTPRequest    `json:"request"`
+	Response *HTTPResponse   `json:"response"`
+}
+
+// Правки запроса и ответа для хоста. Тело передаётся, только если
+// изменилось: гонять мегабайты туда и обратно впустую незачем.
+type requestEdit struct {
+	Method  string  `json:"method"`
+	URL     string  `json:"url"`
+	Headers Header  `json:"headers"`
+	Body    *[]byte `json:"body,omitempty"`
+}
+
+type responseEdit struct {
+	Status  int     `json:"status"`
+	Headers Header  `json:"headers"`
+	Body    *[]byte `json:"body,omitempty"`
+}
+
+type hookReply struct {
+	Request  *requestEdit  `json:"request,omitempty"`
+	Response *responseEdit `json:"response,omitempty"`
+}
+
+// changedBody — указатель на новое тело или nil, если оно не менялось.
+func changedBody(before, after []byte, skipped bool) *[]byte {
+	if skipped || bytes.Equal(before, after) && (before == nil) == (after == nil) {
+		return nil
+	}
+	if after == nil {
+		after = []byte{}
+	}
+	return &after
+}
+
+func handleRequest(req *HTTPRequest) (any, error) {
+	if req.Headers == nil {
+		req.Headers = Header{}
+	}
+	before := bytes.Clone(req.Body)
+	resp, err := plugin.OnRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp != nil {
+		body := resp.Body
+		if body == nil {
+			body = []byte{}
+		}
+		return hookReply{Response: &responseEdit{Status: resp.Status, Headers: resp.Headers, Body: &body}}, nil
+	}
+	return hookReply{Request: &requestEdit{
+		Method:  req.Method,
+		URL:     req.URL,
+		Headers: req.Headers,
+		Body:    changedBody(before, req.Body, req.BodySkipped),
+	}}, nil
+}
+
+func handleResponse(req *HTTPRequest, resp *HTTPResponse) (any, error) {
+	if resp.Headers == nil {
+		resp.Headers = Header{}
+	}
+	before := bytes.Clone(resp.Body)
+	if err := plugin.OnResponse(req, resp); err != nil {
+		return nil, err
+	}
+	return hookReply{Response: &responseEdit{
+		Status:  resp.Status,
+		Headers: resp.Headers,
+		Body:    changedBody(before, resp.Body, resp.BodySkipped),
+	}}, nil
 }
 
 type reply struct {
@@ -94,6 +167,14 @@ func handle(data []byte) (result any, err error) {
 			return nil, fmt.Errorf("plugin does not accept calls")
 		}
 		return plugin.Call(msg.Method, msg.Params)
+	case "request":
+		if plugin.OnRequest != nil && msg.Request != nil {
+			return handleRequest(msg.Request)
+		}
+	case "response":
+		if plugin.OnResponse != nil && msg.Request != nil && msg.Response != nil {
+			return handleResponse(msg.Request, msg.Response)
+		}
 	}
 	return nil, nil
 }

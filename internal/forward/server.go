@@ -51,7 +51,21 @@ type Server struct {
 	// чем его закроют. 0 означает DefaultIdleTimeout, отрицательное —
 	// без ограничения.
 	IdleTimeout time.Duration
-	Logger      *log.Logger
+	// Hooks — обработка запросов плагинами. nil — без неё. Видны ей
+	// только обычный HTTP и расшифрованный (MITM) HTTPS: в непрозрачном
+	// туннеле запросов не разобрать.
+	Hooks  Hooks
+	Logger *log.Logger
+}
+
+// Hooks — то, что пропускает запросы и ответы через плагины. Ошибки
+// плагинов остаются внутри: запрос идёт дальше без их правки.
+type Hooks interface {
+	// OnRequest может поменять запрос на месте. Ответ не nil — вместо
+	// цели отвечает плагин, и запрос никуда не уходит. URL запроса полный.
+	OnRequest(domain string, req *http.Request) *http.Response
+	// OnResponse может поменять ответ на месте; req — ушедший запрос.
+	OnResponse(domain string, req *http.Request, resp *http.Response)
 }
 
 const defaultDialTimeout = 15 * time.Second
@@ -314,6 +328,13 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	domain := hostOnly(r.Host)
 	started := time.Now()
 
+	if s.Hooks != nil {
+		if resp := s.Hooks.OnRequest(domain, r); resp != nil {
+			writeHookResponse(w, resp)
+			return
+		}
+	}
+
 	route, err := s.Pick(domain, nil)
 	if err != nil {
 		http.Error(w, i18n.T("no upstream available: ")+err.Error(), http.StatusServiceUnavailable)
@@ -360,6 +381,9 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 	sample.Status = resp.StatusCode
+	if s.Hooks != nil {
+		s.Hooks.OnResponse(domain, r, resp)
+	}
 
 	respHeader := w.Header()
 	for k, vv := range resp.Header {
@@ -380,6 +404,16 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	sample.Bytes = counted.n
 	sample.Duration = time.Since(started)
 	s.observe(sample)
+}
+
+// writeHookResponse отдаёт клиенту ответ, который плагин дал вместо цели.
+func writeHookResponse(w http.ResponseWriter, resp *http.Response) {
+	defer resp.Body.Close()
+	for k, vv := range resp.Header {
+		w.Header()[k] = vv
+	}
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
 }
 
 // forwardHTTP отправляет запрос через пул keep-alive соединений апстрима и

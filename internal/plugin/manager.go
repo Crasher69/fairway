@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tetratelabs/wazero"
@@ -48,6 +49,8 @@ type Status struct {
 	HTTPHosts      []string        `json:"http_hosts,omitempty"`
 	Missing        []Permission    `json:"missing_permissions,omitempty"`
 	SettingsSchema json.RawMessage `json:"settings_schema,omitempty"`
+	Kind           Kind            `json:"kind,omitempty"`
+	Hooks          *Hooks          `json:"hooks,omitempty"`
 	HasUI          bool            `json:"has_ui"`
 	Enabled        bool            `json:"enabled"`
 	State          State           `json:"state"`
@@ -74,6 +77,10 @@ type Manager struct {
 	known    map[string]*Status  // последний обход каталога и конфига
 	running  map[string]*running // запущенные
 	journals map[string]*journal // лог каждого плагина, переживает перезапуск
+
+	// hooks — обработчики запросов запущенных плагинов по порядку имён.
+	// Читается на каждом запросе через прокси, поэтому без замка.
+	hooks atomic.Pointer[[]*hookPool]
 }
 
 type running struct {
@@ -83,6 +90,7 @@ type running struct {
 	entry    config.Plugin
 	manifest *Manifest
 	module   fileStamp
+	hooks    *hookPool
 }
 
 // fileStamp — версия plugin.wasm: заменили файл — плагин перезапускается.
@@ -282,6 +290,7 @@ func (m *Manager) reconcile(ctx context.Context, cfg *config.Config) {
 		mf := d.manifest
 		st.Version, st.Title, st.Description = mf.Version, mf.Title, mf.Description
 		st.Permissions, st.HTTPHosts, st.SettingsSchema = mf.Permissions, mf.HTTPHosts, mf.SettingsSchema
+		st.Kind, st.Hooks = mf.Kind, mf.Hooks
 		st.Missing = mf.Missing(entry.Granted)
 		if info, err := os.Stat(filepath.Join(m.Dir, name, filepath.FromSlash(UIFile))); err == nil && !info.IsDir() {
 			st.HasUI = true
@@ -325,17 +334,42 @@ func (m *Manager) reconcile(ctx context.Context, cfg *config.Config) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for name, w := range want {
-		w.inst = newInstance(w.manifest, w.entry, &m.Host, m.Logger, m.journalFor(name))
-		w.inst.cache = m.Cache
+		j := m.journalFor(name)
+		dir := filepath.Join(m.Dir, name)
+		w.inst = m.newInstance(w, j)
+		if w.manifest.Kind == KindHook && w.manifest.Hooks != nil {
+			w.hooks = newHookPool(name, *w.manifest.Hooks, dir, w.entry.Settings,
+				func() *instance { return m.newInstance(w, j) },
+				func(format string, args ...any) { pluginLogf(m.Logger, j, name, format, args...) })
+			w.inst.hooks = w.hooks
+		}
 		runCtx, cancel := context.WithCancel(ctx)
 		w.cancel, w.done = cancel, make(chan struct{})
 		m.running[name] = w
-		dir := filepath.Join(m.Dir, name)
 		go func() {
 			defer close(w.done)
 			w.inst.run(runCtx, dir)
 		}()
 	}
+	m.publishHooks()
+}
+
+func (m *Manager) newInstance(r *running, j *journal) *instance {
+	in := newInstance(r.manifest, r.entry, &m.Host, m.Logger, j)
+	in.cache = m.Cache
+	return in
+}
+
+// publishHooks обновляет список обработчиков запросов. Вызывается под m.mu.
+func (m *Manager) publishHooks() {
+	var pools []*hookPool
+	for _, r := range m.running {
+		if r.hooks != nil {
+			pools = append(pools, r.hooks)
+		}
+	}
+	sort.Slice(pools, func(i, j int) bool { return pools[i].name < pools[j].name })
+	m.hooks.Store(&pools)
 }
 
 // changed — надо ли перезапустить плагин: другие настройки или права,
@@ -357,6 +391,7 @@ func (m *Manager) stopAll() {
 	m.mu.Lock()
 	all := m.running
 	m.running = map[string]*running{}
+	m.publishHooks()
 	m.mu.Unlock()
 	for _, r := range all {
 		r.stop()

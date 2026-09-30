@@ -33,17 +33,59 @@ const (
 	Schedule Permission = "schedule"
 	// HTTPFetch — ходить по HTTP на хосты из http_hosts манифеста.
 	HTTPFetch Permission = "http.fetch"
+	// Requests — видеть и менять запросы к доменам из hooks.domains.
+	// Обязательно для плагина вида hook.
+	Requests Permission = "requests"
 )
 
 var knownPermissions = map[Permission]bool{
 	ConfigRead: true, ConfigWrite: true, Events: true, Schedule: true, HTTPFetch: true,
+	Requests: true,
 }
 
-// Kind — вид плагина. Пока есть только base; hook (обработка запросов)
-// появится отдельно.
+// Kind — вид плагина.
 type Kind string
 
-const KindBase Kind = "base"
+const (
+	// KindBase расширяет fairway: конфиг, события, таймер, панель.
+	KindBase Kind = "base"
+	// KindHook умеет всё то же и вдобавок обрабатывает запросы, идущие
+	// через прокси (раздел hooks манифеста).
+	KindHook Kind = "hook"
+)
+
+// Hooks — какие запросы плагин обрабатывает.
+type Hooks struct {
+	// Domains — маски доменов: "*" — все, "*.example.com" — поддомены
+	// (без самого example.com), иначе точное имя.
+	Domains []string `json:"domains"`
+	// Request — вызывать плагин до отправки запроса.
+	Request bool `json:"request,omitempty"`
+	// Response — вызывать плагин на полученный ответ.
+	Response bool `json:"response,omitempty"`
+	// Body — отдавать плагину тело запроса и ответа (до MaxHookBody).
+	// Без него тело идёт потоком и плагину не видно.
+	Body bool `json:"body,omitempty"`
+}
+
+// Matches сообщает, подходит ли домен под маски.
+func (h *Hooks) Matches(domain string) bool {
+	domain = strings.ToLower(strings.TrimSuffix(domain, "."))
+	for _, mask := range h.Domains {
+		mask = strings.ToLower(mask)
+		if mask == "*" {
+			return true
+		}
+		if suffix, ok := strings.CutPrefix(mask, "*."); ok {
+			if strings.HasSuffix(domain, "."+suffix) {
+				return true
+			}
+		} else if domain == mask {
+			return true
+		}
+	}
+	return false
+}
 
 // Manifest — описание плагина из manifest.json.
 type Manifest struct {
@@ -59,6 +101,8 @@ type Manifest struct {
 	// SettingsSchema — JSON Schema настроек, по ней панель рисует форму.
 	// Хост её не разбирает, только передаёт.
 	SettingsSchema json.RawMessage `json:"settings_schema,omitempty"`
+	// Hooks — обработка запросов; есть только у плагина вида hook.
+	Hooks *Hooks `json:"hooks,omitempty"`
 }
 
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
@@ -91,8 +135,20 @@ func (m *Manifest) validate() error {
 	if m.Version == "" {
 		return i18n.Errorf("manifest: empty version")
 	}
-	if m.Kind != KindBase {
-		return i18n.Errorf("manifest: kind %q is not supported (only %q for now)", m.Kind, KindBase)
+	switch m.Kind {
+	case KindBase:
+		if m.Hooks != nil {
+			return i18n.Errorf("manifest: hooks are only for kind %q", KindHook)
+		}
+		if m.Has(Requests) {
+			return i18n.Errorf("manifest: the %q permission is only for kind %q", Requests, KindHook)
+		}
+	case KindHook:
+		if err := m.validateHooks(); err != nil {
+			return err
+		}
+	default:
+		return i18n.Errorf("manifest: kind %q is not supported (%q or %q)", m.Kind, KindBase, KindHook)
 	}
 	for _, p := range m.Permissions {
 		if !knownPermissions[p] {
@@ -106,6 +162,29 @@ func (m *Manifest) validate() error {
 		bare := strings.TrimPrefix(h, "*.")
 		if bare == "" || strings.ContainsAny(bare, "*/:") {
 			return i18n.Errorf("manifest: http_hosts: %q is not a host name", h)
+		}
+	}
+	return nil
+}
+
+func (m *Manifest) validateHooks() error {
+	h := m.Hooks
+	if h == nil || (!h.Request && !h.Response) {
+		return i18n.Errorf("manifest: a hook plugin needs hooks.request or hooks.response")
+	}
+	if !m.Has(Requests) {
+		return i18n.Errorf("manifest: a hook plugin needs the %q permission", Requests)
+	}
+	if len(h.Domains) == 0 {
+		return i18n.Errorf("manifest: hooks.domains is empty")
+	}
+	for _, d := range h.Domains {
+		if d == "*" {
+			continue
+		}
+		bare := strings.TrimPrefix(d, "*.")
+		if bare == "" || strings.ContainsAny(bare, "*/: ") {
+			return i18n.Errorf("manifest: hooks.domains: %q is not a domain mask", d)
 		}
 	}
 	return nil
