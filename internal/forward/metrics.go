@@ -15,7 +15,14 @@ type Sample struct {
 	TTFB     time.Duration // от установленного соединения до первого байта ответа
 	Duration time.Duration // полное время обработки запроса
 	Bytes    int64         // байт получено от апстрима
-	Status   int           // HTTP-статус; 0 для непрозрачного CONNECT-туннеля
+	// Transfer — сколько времени реально шли байты ответа, TransferBytes —
+	// сколько их пришло за это время. Из них и только из них считается
+	// скорость. Полное время не годится: в него входят чужие неудачные
+	// попытки, отправка тела запроса, а в туннеле ещё и простой keep-alive
+	// между запросами, когда браузер держит сокет минутами.
+	Transfer      time.Duration
+	TransferBytes int64
+	Status        int // HTTP-статус; 0 для непрозрачного CONNECT-туннеля
 	// Reused означает, что запрос ушёл по уже открытому соединению: время
 	// установки в нём не измерялось и в рейтинг попадать не должно.
 	Reused bool
@@ -46,12 +53,11 @@ func (c *clientWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// Throughput — средняя скорость отдачи, байт/сек. Считается от момента
-// первого байта, чтобы latency апстрима не занижала скорость.
+// Throughput — скорость отдачи, байт/сек, по времени передачи (Transfer):
+// задержка апстрима и простой соединения её не занижают. 0 — не измерена.
 func (s Sample) Throughput() float64 {
-	body := s.Duration - s.Connect - s.TTFB
-	if body <= 0 || s.Bytes == 0 {
+	if s.Transfer <= 0 || s.TransferBytes == 0 {
 		return 0
 	}
-	return float64(s.Bytes) / body.Seconds()
+	return float64(s.TransferBytes) / s.Transfer.Seconds()
 }

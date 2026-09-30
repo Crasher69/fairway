@@ -244,7 +244,9 @@ type proxyState struct {
 	Banned      bool      `json:"banned"`
 	BannedUntil time.Time `json:"banned_until,omitempty"`
 	BanReason   string    `json:"ban_reason,omitempty"`
-	Status      string    `json:"status"`
+	// BanStrikes — сколько банов подряд без успеха: от него растёт срок.
+	BanStrikes int    `json:"ban_strikes,omitempty"`
+	Status     string `json:"status"`
 }
 
 type domainResponse struct {
@@ -260,9 +262,11 @@ type ruleView struct {
 	MaxParallelProxies int    `json:"max_parallel_proxies"`
 	MaxConnsPerProxy   int    `json:"max_conns_per_proxy"`
 	BanDuration        string `json:"ban_duration"`
-	ConnectTimeout     string `json:"connect_timeout"`
-	ResponseTimeout    string `json:"response_timeout"`
-	Known              bool   `json:"known"`
+	// MaxBanDuration — потолок растущего бана; пусто, если срок не растёт.
+	MaxBanDuration  string `json:"max_ban_duration,omitempty"`
+	ConnectTimeout  string `json:"connect_timeout"`
+	ResponseTimeout string `json:"response_timeout"`
+	Known           bool   `json:"known"`
 }
 
 // domain — то, ради чего админка и нужна: что творится с прокси конкретного
@@ -283,6 +287,9 @@ func (s *Server) domain(w http.ResponseWriter, r *http.Request) {
 			ConnectTimeout:     rule.ConnectTimeout.String(),
 			ResponseTimeout:    rule.ResponseTimeout.String(),
 			Known:              true,
+		}
+		if rule.MaxBanDuration > rule.BanDuration && rule.BanDuration > 0 {
+			resp.Rule.MaxBanDuration = rule.MaxBanDuration.String()
 		}
 	}
 
@@ -307,11 +314,22 @@ func (s *Server) domain(w http.ResponseWriter, r *http.Request) {
 	var weightSum float64
 	var alive, probing int
 	weights := make(map[string]float64, len(snap.Proxies))
+	busy := "" // вышел из бана, проба висит: запросов ему не дают
 	for id, st := range snap.Proxies {
 		if now.Before(st.BannedUntil) {
 			continue
 		}
+		if st.Probation && inFlight[id] > 0 {
+			busy = id
+			continue
+		}
 		alive++
+		if st.Probation {
+			// Вышел из бана и ждёт пробы — получит следующий запрос вне
+			// очереди, как непроверенный.
+			probing++
+			continue
+		}
 		if st.Samples < rating.MinSamples {
 			// Непроверенный без висящих соединений получит следующий
 			// запрос вне очереди; с висящими — только через разведку.
@@ -331,7 +349,9 @@ func (s *Server) domain(w http.ResponseWriter, r *http.Request) {
 	// Забанены все — Select отдаёт весь трафик тому, чей бан кончится
 	// раньше; таблица должна показывать то же.
 	fallback := ""
-	if alive == 0 {
+	if alive == 0 && busy != "" {
+		fallback = busy
+	} else if alive == 0 {
 		var soonest time.Time
 		for id, st := range snap.Proxies {
 			if fallback == "" || st.BannedUntil.Before(soonest) {
@@ -360,7 +380,9 @@ func (s *Server) domain(w http.ResponseWriter, r *http.Request) {
 			Cost:        st.Cost,
 			BannedUntil: st.BannedUntil,
 			BanReason:   st.BanReason,
+			BanStrikes:  st.Strikes,
 		}
+		onProbation := st.Probation && !now.Before(st.BannedUntil)
 		switch {
 		case now.Before(st.BannedUntil):
 			row.Banned = true
@@ -368,10 +390,15 @@ func (s *Server) domain(w http.ResponseWriter, r *http.Request) {
 			if id == fallback {
 				row.Share = 1
 			}
+		case id == fallback:
+			row.Share = 1
+		case onProbation && inFlight[id] > 0:
+			// Проба висит — до её исхода прокси не получает ничего.
 		case probing > 0:
-			// Следующий запрос уйдёт одному из непроверенных — ровно так
-			// делает Select, остальным в этот момент не достаётся ничего.
-			if st.Samples < rating.MinSamples && inFlight[id] == 0 {
+			// Следующий запрос уйдёт одному из непроверенных или вышедших
+			// из бана — ровно так делает Select, остальным в этот момент не
+			// достаётся ничего.
+			if (onProbation || st.Samples < rating.MinSamples) && inFlight[id] == 0 {
 				row.Share = 1 / float64(probing)
 			}
 		case alive > 0:
@@ -383,6 +410,9 @@ func (s *Server) domain(w http.ResponseWriter, r *http.Request) {
 		}
 		if !row.Banned {
 			row.Status = statusOf(st)
+			if onProbation {
+				row.Status = "probation"
+			}
 		}
 		resp.Proxies = append(resp.Proxies, row)
 	}

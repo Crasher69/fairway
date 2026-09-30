@@ -23,10 +23,12 @@ import (
 // mitmHarness — цель по HTTPS, наш прокси с расшифровкой и клиент,
 // доверяющий нашему CA. Ровно та схема, что получается в бою.
 type mitmHarness struct {
-	target  *httptest.Server
-	proxy   *httptest.Server
-	client  *http.Client
-	roots   *x509.CertPool
+	target *httptest.Server
+	proxy  *httptest.Server
+	client *http.Client
+	roots  *x509.CertPool
+	// srv — сам прокси: тест может поправить настройки до первого запроса.
+	srv     *Server
 	mu      sync.Mutex
 	samples []Sample
 }
@@ -58,7 +60,7 @@ func (h *mitmHarness) wire(t *testing.T) {
 	originRoots := x509.NewCertPool()
 	originRoots.AddCert(h.target.Certificate())
 
-	h.proxy = httptest.NewServer(&Server{
+	h.srv = &Server{
 		Pick: func(string, []string) (*Route, error) {
 			return &Route{Upstream: direct, Name: "direct", MITM: true}, nil
 		},
@@ -69,7 +71,8 @@ func (h *mitmHarness) wire(t *testing.T) {
 			h.samples = append(h.samples, s)
 			h.mu.Unlock()
 		},
-	})
+	}
+	h.proxy = httptest.NewServer(h.srv)
 	t.Cleanup(h.proxy.Close)
 
 	// Клиент доверяет нашему CA — так же, как машина сети после импорта.

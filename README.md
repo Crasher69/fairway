@@ -171,13 +171,27 @@ A request the client itself abandoned (closed tab, navigated away) does not
 count against the proxy. If every proxy of a list is banned for a domain,
 requests go through the one whose ban ends first instead of getting a 503.
 
+**A proxy that stays dead for a site is banned for longer each time.** Every
+ban in a row with no successful reply in between is twice as long as the
+previous one, up to `max_ban_duration`: 5, 10, 20, 40 minutes, then an hour.
+When a ban ends the proxy gets a single test request, ahead of the queue; while
+it is in flight the proxy gets nothing else. A success returns it to the
+rotation and resets the growth; a connection failure or a challenge page bans
+it again at once, without waiting for three failures (403 still needs three in
+a row). Growth is also forgotten if the last ban ended longer than
+`max_ban_duration` ago.
+
 **A request that got no reply through one proxy is retried through another**,
 up to three proxies in total, and the client does not notice. For tunnels
 that covers everything the client sent before the target's first byte (the
 TLS handshake included); for plain HTTP, requests without a body. In MITM
 mode the upstream is swapped mid-tunnel, because the client speaks TLS to us
 rather than to the target. Once a single byte has come back the request is
-never retried: it may already have been executed.
+never retried: it may already have been executed. The same goes for a `POST`
+or `PATCH` that reached the target and got no reply in time: the site may be
+executing it, so the client gets `504` instead of a second payment or order.
+Such requests are retried only if the proxy never connected. `GET`, `PUT`,
+`DELETE` and requests with an `Idempotency-Key` header are retried as before.
 
 Ratings survive a restart (`data/ratings.json`).
 
@@ -202,6 +216,7 @@ not applied: the previous version stays in service.
     "allow_direct": false,
     "max_conns_per_proxy": 32,
     "ban_duration": "5m",
+    "max_ban_duration": "1h",
     "connect_timeout": "15s",
     "response_timeout": "1m"
   },
@@ -236,7 +251,8 @@ Two timeouts, both in `defaults` and in a domain rule (empty in a rule means
   a request (plain HTTP and MITM). The body may take as long as it takes.
 
 Missing either one counts as a failure of that proxy for the domain, and the
-request is retried through another proxy. Raise `response_timeout` for a site
+request is retried through another proxy (a `POST` that timed out is not, see
+above). Raise `response_timeout` for a site
 that is slow to think (reports, exports), or healthy proxies get banned for
 it. A config without timeouts gets `15s` and `1m` in `defaults` on load.
 
@@ -259,7 +275,9 @@ plain proxy at once.
 Supported upstreams: `http://`, `https://`, `socks5://` and `direct`.
 
 Lists hold proxies by `id`, a UUID that fairway assigns to every proxy itself
-and writes back to the file the first time it reads it. So a proxy can be
+and writes back to the file the first time it reads it. The id is derived from
+the proxy name, so a read-only config (for example a Docker `:ro` mount) gets
+the same ids on every start and keeps its ratings. A proxy can be
 renamed without breaking any list, and its rating and connection counters,
 which are also kept by `id`, survive the rename. Ratings saved by earlier
 versions under proxy names are moved to ids on startup. In a hand-edited file a list may still name

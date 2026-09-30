@@ -350,7 +350,8 @@ function renderRule(rule) {
       chip('TLS', rule.mitm ? t('decrypt') : t('tunnel')),
       chip(t('proxies at once'), rule.max_parallel_proxies || t('unlimited')),
       chip(t('connections per proxy'), rule.max_conns_per_proxy || t('unlimited')),
-      chip(t('ban'), humanDuration(rule.ban_duration)),
+      chip(t('ban'), humanDuration(rule.ban_duration)
+        + (rule.max_ban_duration ? ' → ' + humanDuration(rule.max_ban_duration) : '')),
       chip(t('timeouts'), humanDuration(rule.connect_timeout) + ' / ' + humanDuration(rule.response_timeout)),
     );
     link.textContent = t('Edit rule');
@@ -392,6 +393,7 @@ function badgeClass(proxy) {
     case 'ok': return 'ok';
     case 'degraded': return 'warn';
     case 'probing': return 'info';
+    case 'probation': return 'warn';
     default: return 'idle';
   }
 }
@@ -421,11 +423,13 @@ function renderProxies(proxies) {
       : t(p.status);
     status.append(badge);
     if (p.banned) {
-      if (p.ban_reason) {
+      if (p.ban_reason || p.ban_strikes > 1) {
         const why = document.createElement('span');
         why.className = 'sub';
         why.style.fontFamily = 'inherit';
-        why.textContent = p.ban_reason;
+        // Номер бана подряд: по нему видно, почему срок длиннее обычного.
+        const strikes = p.ban_strikes > 1 ? t('ban #{n} in a row', { n: p.ban_strikes }) : '';
+        why.textContent = [p.ban_reason, strikes].filter(Boolean).join(' · ');
         status.append(why);
       }
       const unban = button(t('Unban'), () => {
@@ -2111,6 +2115,7 @@ function startRuleEdit(rule) {
   form.max_parallel_proxies.value = rule.max_parallel_proxies ?? '';
   form.max_conns_per_proxy.value = rule.max_conns_per_proxy ?? '';
   form.ban_duration.value = rule.ban_duration || '';
+  form.max_ban_duration.value = rule.max_ban_duration || '';
   form.connect_timeout.value = rule.connect_timeout || '';
   form.response_timeout.value = rule.response_timeout || '';
   $('rule-form-title').textContent = t('Edit rule: {pattern}', { pattern: rule.pattern });
@@ -2137,6 +2142,7 @@ $('rule-form').onsubmit = (event) => {
     max_parallel_proxies: number(form.max_parallel_proxies.value),
     max_conns_per_proxy: number(form.max_conns_per_proxy.value),
     ban_duration: form.ban_duration.value.trim(),
+    max_ban_duration: form.max_ban_duration.value.trim(),
     connect_timeout: form.connect_timeout.value.trim(),
     response_timeout: form.response_timeout.value.trim(),
   };
@@ -2187,6 +2193,7 @@ function fillDefaults() {
   form.max_parallel_proxies.value = settings.defaults.max_parallel_proxies ?? '';
   form.max_conns_per_proxy.value = settings.defaults.max_conns_per_proxy ?? '';
   form.ban_duration.value = settings.defaults.ban_duration || '';
+  form.max_ban_duration.value = settings.defaults.max_ban_duration || '';
   form.connect_timeout.value = settings.defaults.connect_timeout || '';
   form.response_timeout.value = settings.defaults.response_timeout || '';
 }
@@ -2201,6 +2208,7 @@ $('defaults-form').onsubmit = (event) => {
     max_parallel_proxies: number(form.max_parallel_proxies.value),
     max_conns_per_proxy: number(form.max_conns_per_proxy.value),
     ban_duration: form.ban_duration.value.trim(),
+    max_ban_duration: form.max_ban_duration.value.trim(),
     connect_timeout: form.connect_timeout.value.trim(),
     response_timeout: form.response_timeout.value.trim(),
   }), t('General settings saved'));

@@ -27,6 +27,33 @@ const tunnelHeadLimit = 64 << 10
 // соединение у прокси, а браузер такое соединение всё равно переоткроет.
 const DefaultIdleTimeout = 5 * time.Minute
 
+// transferGap — пауза между порциями от цели, после которой туннель
+// считается простаивающим. Внутри одной отдачи порции идут с интервалом
+// в круговую задержку (сотни миллисекунд даже у медленного прокси), а
+// между запросами браузера по keep-alive — секунды и минуты.
+const transferGap = time.Second
+
+// transferMeter считает, сколько времени через туннель реально шли байты
+// от цели. Скорость по полному времени жизни туннеля бессмысленна: браузер
+// держит его минутами, и 200 КБ за пять минут давали бы 700 байт в секунду
+// у любого прокси. Порция после долгой паузы открывает новую отдачу: её
+// байты не учитываются, как и время ожидания перед ней, — это время до
+// первого байта очередного ответа, а не скорость.
+type transferMeter struct {
+	last   time.Time
+	active time.Duration
+	bytes  int64
+}
+
+func (m *transferMeter) add(n int) {
+	now := time.Now()
+	if gap := now.Sub(m.last); gap <= transferGap {
+		m.active += gap
+		m.bytes += int64(n)
+	}
+	m.last = now
+}
+
 // tunnelHead — то, что клиент успел прислать в туннель, пока цель молчит.
 // Пока от цели нет ни байта, эти данные можно повторить через другой
 // прокси: TLS ClientHello или HTTP-запрос без ответа ни к чему клиента не
@@ -133,7 +160,7 @@ func watchIdle(idle time.Duration, activity *atomic.Int64, kill func()) (stop fu
 func tunnelError(err error, wait time.Duration) error {
 	switch {
 	case errors.Is(err, os.ErrDeadlineExceeded):
-		return i18n.Errorf("no reply from target within %s", wait)
+		return &replyTimeout{wait: wait}
 	case errors.Is(err, io.EOF):
 		return i18n.Errorf("connection closed before the target answered")
 	}

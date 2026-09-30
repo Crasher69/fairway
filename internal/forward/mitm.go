@@ -36,7 +36,7 @@ type CertIssuer interface {
 // апстрима запрос уходит через другой, и освобождать нужно последний,
 // а не тот, с которым туннель начинался.
 func (s *Server) mitmTunnel(w http.ResponseWriter, route *Route, target string) *Route {
-	domain := hostOnly(target)
+	domain := domainOf(target)
 
 	hj, ok := w.(http.Hijacker)
 	if !ok {
@@ -186,6 +186,7 @@ func (s *Server) roundTrip(up *mitmUpstream, client net.Conn, clientReader *bufi
 		resp         *http.Response
 		targetReader *bufio.Reader
 		ttfb         time.Duration
+		firstByte    time.Time
 	)
 	for {
 		conn, connect, fresh, err := up.connection()
@@ -193,31 +194,32 @@ func (s *Server) roundTrip(up *mitmUpstream, client net.Conn, clientReader *bufi
 		sample.Reused = !fresh
 		var received bool
 		if err == nil {
-			resp, targetReader, ttfb, received, err = exchange(conn, req, s.responseTimeout(up.route))
-			if err != nil && retriable && !fresh && !received {
+			resp, targetReader, ttfb, firstByte, received, err = exchange(conn, req, s.responseTimeout(up.route))
+			if err != nil && retriable && !fresh && !received && (idempotent(req) || !timedOut(err)) {
 				// Цель могла закрыть keep-alive соединение, пока оно простаивало, —
 				// это штатная ситуация, а не отказ прокси. Повторяем только если от
 				// цели не пришло ни байта: получив хотя бы начало ответа, нельзя
 				// знать, выполнила ли она запрос, а повторять POST вслепую опасно.
+				// Таймаут — не мёртвый keep-alive: запрос дошёл, и цель его,
+				// возможно, выполняет. POST после него не повторяется.
 				up.close()
 				conn, connect, _, err = up.connection()
 				sample.Connect = connect
 				sample.Reused = false
 				if err == nil {
 					rewind()
-					resp, targetReader, ttfb, received, err = exchange(conn, req, s.responseTimeout(up.route))
+					resp, targetReader, ttfb, firstByte, received, err = exchange(conn, req, s.responseTimeout(up.route))
 				}
 			}
 		}
 		if err == nil {
 			break
 		}
-		// Через этот апстрим не вышло. Повторять через другой можно, пока
-		// от цели не пришло ни байта: дальше неизвестно, выполнен ли
-		// запрос. Тело, не влезшее в буфер, тоже не повторить — но если
-		// соединение не встало вовсе, запрос ещё не отправлялся, и тело
-		// цело.
-		if received || (!retriable && up.conn != nil) {
+		// Через этот апстрим не вышло. Если соединение не встало вовсе,
+		// запрос не отправлялся: тело цело, и повторить можно любой запрос.
+		// Иначе — только если его можно выполнить ещё раз (см. retry.go) и
+		// тело есть в буфере.
+		if up.conn != nil && (!retriable || !replaySafe(req, err, received)) {
 			return s.fail(sample, started, client, err, up)
 		}
 		next, nextErr := s.nextRoute(domain, up.route, &avoid)
@@ -271,9 +273,14 @@ func (s *Server) roundTrip(up *mitmUpstream, client net.Conn, clientReader *bufi
 		sample.ClientGone = out.err != nil
 	}
 	sample.Bytes = counted.n
+	sample.Transfer, sample.TransferBytes = time.Since(firstByte), counted.n
 	sample.Duration = time.Since(started)
+	// Страница проверки маленькая и видна целиком. Крупная страница,
+	// обрезанная на PrefixSize, — это содержимое, даже если в нём
+	// упоминается маркер заслона.
 	sample.Challenge = challenge.Detect(status, header,
-		challenge.Decode(resp.Header.Get("Content-Encoding"), sniff.buf))
+		challenge.Decode(resp.Header.Get("Content-Encoding"), sniff.buf),
+		counted.n <= int64(challenge.PrefixSize))
 
 	if resp.Close {
 		up.close()
@@ -369,18 +376,28 @@ func (s *Server) replayBodyLimit() int64 {
 
 // exchange отправляет запрос и читает ответ, замеряя время до первого байта.
 // received сообщает, пришёл ли от цели хотя бы один байт: по нему решается,
-// можно ли повторять запрос после ошибки.
+// можно ли повторять запрос после ошибки. first — момент этого байта, от
+// него считается скорость отдачи тела.
 // Возвращает и ридер цели: после 101 в нём могут лежать первые кадры.
 //
-// На заголовки ответа отводится wait: прокси, который принял запрос и
-// молчит, иначе не давал бы ни ошибки, ни замера, а клиент ждал бы вечно.
-// На тело дедлайн не распространяется — оно может идти сколько угодно.
-func exchange(conn net.Conn, req *http.Request, wait time.Duration) (resp *http.Response, reader *bufio.Reader, ttfb time.Duration, received bool, err error) {
-	sent := time.Now()
-	if err := req.Write(conn); err != nil {
-		return nil, nil, 0, false, err
-	}
+// На заголовки ответа отводится wait, и отсчёт идёт от конца отправки
+// запроса: прокси, который принял запрос и молчит, иначе не давал бы ни
+// ошибки, ни замера, а клиент ждал бы вечно, но и загрузка большого тела
+// по медленному каналу молчанием не считается. Пока тело уходит, срок
+// отодвигается на каждой порции. На тело ответа дедлайн не
+// распространяется — оно может идти сколько угодно.
+func exchange(conn net.Conn, req *http.Request, wait time.Duration) (resp *http.Response, reader *bufio.Reader, ttfb time.Duration, first time.Time, received bool, err error) {
 	watcher := &firstByteWatcher{r: conn}
+	var out io.Writer = conn
+	if wait > 0 {
+		out = &progressWriter{conn: conn, wait: wait}
+	}
+	werr := req.Write(out)
+	_ = conn.SetWriteDeadline(time.Time{})
+	sent := time.Now()
+	if werr != nil {
+		return nil, nil, 0, time.Time{}, false, &writeError{werr}
+	}
 	reader = bufio.NewReader(watcher)
 	if wait > 0 {
 		_ = conn.SetReadDeadline(sent.Add(wait))
@@ -389,12 +406,28 @@ func exchange(conn net.Conn, req *http.Request, wait time.Duration) (resp *http.
 	_ = conn.SetReadDeadline(time.Time{})
 	received = !watcher.first.IsZero()
 	if err != nil {
-		return nil, nil, 0, received, err
+		return nil, nil, 0, time.Time{}, received, err
 	}
-	if received {
-		ttfb = watcher.first.Sub(sent)
+	first = watcher.first
+	// Цель могла ответить, не дочитав тело (413, ранний редирект), —
+	// тогда первый байт раньше конца отправки, и ждать было нечего.
+	if first.After(sent) {
+		ttfb = first.Sub(sent)
 	}
-	return resp, reader, ttfb, received, nil
+	return resp, reader, ttfb, first, received, nil
+}
+
+// progressWriter ставит дедлайн записи на каждую порцию: запись встаёт
+// только если цель (или прокси) перестала принимать данные, а не если
+// тело просто большое.
+type progressWriter struct {
+	conn net.Conn
+	wait time.Duration
+}
+
+func (p *progressWriter) Write(b []byte) (int, error) {
+	_ = p.conn.SetWriteDeadline(time.Now().Add(p.wait))
+	return p.conn.Write(b)
 }
 
 // mitmUpstream держит одно TLS-соединение до цели через выбранный апстрим.
@@ -505,7 +538,7 @@ func (f *firstByteWatcher) Read(b []byte) (int, error) {
 func writeGatewayError(w io.Writer, cause error) {
 	body := i18n.T("upstream unavailable: ") + cause.Error()
 	resp := &http.Response{
-		StatusCode:    http.StatusBadGateway,
+		StatusCode:    gatewayStatus(cause),
 		Proto:         "HTTP/1.1",
 		ProtoMajor:    1,
 		ProtoMinor:    1,

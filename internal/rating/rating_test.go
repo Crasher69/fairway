@@ -67,8 +67,11 @@ func sample(domain, proxy string, connect, ttfb time.Duration, bytes int64, stat
 		TTFB:     ttfb,
 		Bytes:    bytes,
 		Duration: connect + ttfb + time.Second,
-		Status:   status,
-		Err:      err,
+		// Тело шло секунду: скорость равна объёму.
+		Transfer:      time.Second,
+		TransferBytes: bytes,
+		Status:        status,
+		Err:           err,
 	}
 }
 
@@ -216,6 +219,227 @@ func TestSuccessResetsFailureStreak(t *testing.T) {
 	}
 	if isBanned, _, _ := r.Stats("example.com", "p").Banned(now); isBanned {
 		t.Error("одиночные ошибки вперемешку с успехами не должны давать бан")
+	}
+}
+
+// TestBlockStreakStartsOverAfterBan — после бана за 403 прокси снова нужны
+// три отказа подряд: одиночный 403 часто относится к одному адресу, а не к
+// прокси, и на проверке после бана это так же верно, как до него. Ответы
+// запросов, ушедших до бана и вернувшихся во время него, в серию не идут.
+func TestBlockStreakStartsOverAfterBan(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	r := NewRegistry()
+	r.Now = func() time.Time { return now }
+	r.BanDuration = func(string) time.Duration { return time.Minute }
+	stats := r.Stats("example.com", "p")
+	bad := sample("example.com", "p", 10*time.Millisecond, 10*time.Millisecond, 1000, 403, nil)
+
+	block(r, bad)
+	if isBanned, _, _ := stats.Banned(now); !isBanned {
+		t.Fatal("три 403 подряд не дали бан")
+	}
+	for i := 0; i < 5; i++ {
+		r.Observe(bad) // вернулись во время бана
+	}
+
+	now = now.Add(2 * time.Minute)
+	r.Observe(bad)
+	if isBanned, _, _ := stats.Banned(now); isBanned {
+		t.Fatal("один 403 после истёкшего бана забанил снова")
+	}
+	r.Observe(bad)
+	r.Observe(bad)
+	if isBanned, _, _ := stats.Banned(now); !isBanned {
+		t.Error("три 403 подряд после бана должны банить, как в первый раз")
+	}
+}
+
+// deadRegistry — реестр с растущим баном: 5 минут, потолок час.
+func deadRegistry(now *time.Time) *Registry {
+	r := NewRegistry()
+	r.Now = func() time.Time { return *now }
+	r.BanDuration = func(string) time.Duration { return 5 * time.Minute }
+	r.MaxBanDuration = func(string) time.Duration { return time.Hour }
+	return r
+}
+
+// banLeft — на сколько забанен прокси сейчас.
+func banLeft(t *testing.T, stats *Stats, now time.Time) time.Duration {
+	t.Helper()
+	isBanned, until, _ := stats.Banned(now)
+	if !isBanned {
+		t.Fatal("прокси не забанен")
+	}
+	return until.Sub(now)
+}
+
+// TestBanGrowsWhileProxyStaysDead — прокси, мёртвый для сайта надолго,
+// не должен каждые пять минут проваливать новые запросы. Каждый бан подряд
+// вдвое дольше, до потолка, а после бана хватает одной пробы.
+func TestBanGrowsWhileProxyStaysDead(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	r := deadRegistry(&now)
+	stats := r.Stats("example.com", "dead")
+	fail := sample("example.com", "dead", 0, 0, 0, 0, errors.New("connection refused"))
+
+	for i := 0; i < failsBeforeBan; i++ {
+		r.Observe(fail)
+	}
+	want := []time.Duration{5 * time.Minute, 10 * time.Minute, 20 * time.Minute, 40 * time.Minute, time.Hour, time.Hour}
+	for i, w := range want {
+		left := banLeft(t, stats, now)
+		if left != w {
+			t.Fatalf("бан %d: %s, ожидалось %s", i+1, left, w)
+		}
+		now = now.Add(left)
+		if !stats.OnProbation(now) {
+			t.Fatalf("после бана %d прокси не на проверке", i+1)
+		}
+		r.Observe(fail) // проба провалилась — бан сразу, без серии
+	}
+}
+
+// TestSuccessResetsBanGrowth — прокси ожил: следующий бан снова короткий и
+// снова после трёх неудач.
+func TestSuccessResetsBanGrowth(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	r := deadRegistry(&now)
+	stats := r.Stats("example.com", "p")
+	fail := sample("example.com", "p", 0, 0, 0, 0, errors.New("connection refused"))
+	ok := sample("example.com", "p", 10*time.Millisecond, 10*time.Millisecond, 100_000, 200, nil)
+
+	for i := 0; i < failsBeforeBan; i++ {
+		r.Observe(fail)
+	}
+	now = now.Add(banLeft(t, stats, now))
+	r.Observe(fail) // проба не прошла — 10 минут
+	now = now.Add(banLeft(t, stats, now))
+
+	r.Observe(ok)
+	if stats.OnProbation(now) {
+		t.Fatal("успешная проба не вернула прокси в ротацию")
+	}
+	r.Observe(fail)
+	r.Observe(fail)
+	if isBanned, _, _ := stats.Banned(now); isBanned {
+		t.Fatal("после успеха две ошибки уже банят")
+	}
+	r.Observe(fail)
+	if left := banLeft(t, stats, now); left != 5*time.Minute {
+		t.Errorf("бан после успеха %s, ожидалось снова 5m", left)
+	}
+}
+
+// TestLongQuietForgetsBanGrowth — провалы многочасовой давности о прокси
+// ничего не говорят: если с конца последнего бана прошло больше потолка,
+// следующий снова начальный.
+func TestLongQuietForgetsBanGrowth(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	r := deadRegistry(&now)
+	stats := r.Stats("example.com", "p")
+	fail := sample("example.com", "p", 0, 0, 0, 0, errors.New("connection refused"))
+
+	for i := 0; i < failsBeforeBan; i++ {
+		r.Observe(fail)
+	}
+	now = now.Add(banLeft(t, stats, now))
+	r.Observe(fail) // 10 минут
+	now = now.Add(banLeft(t, stats, now) + 2*time.Hour)
+
+	r.Observe(fail)
+	if left := banLeft(t, stats, now); left != 5*time.Minute {
+		t.Errorf("бан после долгой тишины %s, ожидалось 5m", left)
+	}
+}
+
+// TestBanDoesNotGrowWithoutCeiling — без потолка (или потолок не выше
+// начального срока) бан всегда начальный.
+func TestBanDoesNotGrowWithoutCeiling(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	r := NewRegistry()
+	r.Now = func() time.Time { return now }
+	r.BanDuration = func(string) time.Duration { return 5 * time.Minute }
+	stats := r.Stats("example.com", "p")
+	fail := sample("example.com", "p", 0, 0, 0, 0, errors.New("connection refused"))
+
+	for i := 0; i < failsBeforeBan; i++ {
+		r.Observe(fail)
+	}
+	for i := 0; i < 3; i++ {
+		left := banLeft(t, stats, now)
+		if left != 5*time.Minute {
+			t.Fatalf("бан %d: %s, ожидалось 5m", i+1, left)
+		}
+		now = now.Add(left)
+		r.Observe(fail)
+	}
+}
+
+// TestSelectProbesBannedProxyOneAtATime — вышедший из бана прокси получает
+// один пробный запрос вне очереди, а пока он висит — ничего: иначе лотерея
+// по старым хорошим замерам отдала бы ему полную долю, и провалились бы
+// сразу несколько запросов.
+func TestSelectProbesBannedProxyOneAtATime(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	pool := poolWith(t, "good", "back")
+	r := deadRegistry(&now)
+	r.Rand = fixedRand(0.99) // без разведки
+
+	for i := 0; i < 10; i++ {
+		r.Observe(sample("example.com", "good", 50*time.Millisecond, 50*time.Millisecond, 100_000, 200, nil))
+		// «back» быстрее: до бана лотерея отдавала бы ему почти всё.
+		r.Observe(sample("example.com", "back", 5*time.Millisecond, 5*time.Millisecond, 100_000, 200, nil))
+	}
+	for i := 0; i < failsBeforeBan; i++ {
+		r.Observe(sample("example.com", "back", 0, 0, 0, 0, errors.New("refused")))
+	}
+	now = now.Add(time.Hour)
+
+	if got := r.Select("example.com", withInFlight(pool, nil)); got.Name != "back" {
+		t.Fatalf("проба после бана не ушла вне очереди, выбран %s", got.Name)
+	}
+	busy := map[string]int{"back": 1}
+	for i := 0; i < 20; i++ {
+		if got := r.Select("example.com", withInFlight(pool, busy)); got.Name != "good" {
+			t.Fatalf("запрос %d лёг поверх висящей пробы", i)
+		}
+	}
+	// Больше некого — лучше висящая проба, чем отказ.
+	if got := r.Select("example.com", withInFlight(poolWith(t, "back"), busy)); got == nil || got.Name != "back" {
+		t.Errorf("единственный прокси на проверке не выбран: %v", got)
+	}
+}
+
+// TestBanGrowthSurvivesRestart — счётчик банов подряд и проверка после
+// бана переживают перезапуск: иначе мёртвый прокси после каждого рестарта
+// снова получал бы пять минут и три запроса.
+func TestBanGrowthSurvivesRestart(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "ratings.json")
+	src := deadRegistry(&now)
+	stats := src.Stats("example.com", "p")
+	fail := sample("example.com", "p", 0, 0, 0, 0, errors.New("refused"))
+	for i := 0; i < failsBeforeBan; i++ {
+		src.Observe(fail)
+	}
+	now = now.Add(banLeft(t, stats, now))
+	src.Observe(fail) // 10 минут
+	if err := src.Save(path); err != nil {
+		t.Fatal(err)
+	}
+
+	now = now.Add(15 * time.Minute) // бан кончился, пока fairway стоял
+	dst := deadRegistry(&now)
+	if err := dst.Load(path); err != nil {
+		t.Fatal(err)
+	}
+	restored := dst.Stats("example.com", "p")
+	if !restored.OnProbation(now) {
+		t.Fatal("после перезапуска прокси не на проверке")
+	}
+	dst.Observe(fail)
+	if left := banLeft(t, restored, now); left != 20*time.Minute {
+		t.Errorf("бан после перезапуска %s, ожидалось 20m", left)
 	}
 }
 

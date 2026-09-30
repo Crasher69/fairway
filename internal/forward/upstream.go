@@ -290,3 +290,66 @@ func (c *cancelOnClose) Close() error {
 	c.cancel()
 	return err
 }
+
+// watchdog отменяет запрос, если в нём долго нет движения. В отличие от
+// простого таймера его можно подтолкнуть: каждый kick откладывает срок.
+//
+// После stop толчки ничего не делают. Это важно: цель может ответить, не
+// дочитав тело, и транспорт дописывает его уже после ответа — толчок
+// оттуда завёл бы остановленный таймер, и через wait он отменил бы запрос
+// посреди скачивания ответа.
+type watchdog struct {
+	mu      sync.Mutex
+	t       *time.Timer
+	wait    time.Duration
+	fired   bool
+	stopped bool
+}
+
+func newWatchdog(wait time.Duration, cancel context.CancelFunc) *watchdog {
+	w := &watchdog{wait: wait}
+	w.t = time.AfterFunc(wait, func() {
+		w.mu.Lock()
+		if w.stopped {
+			w.mu.Unlock()
+			return
+		}
+		w.fired = true
+		w.mu.Unlock()
+		cancel()
+	})
+	return w
+}
+
+// kick откладывает срок на полный wait от текущего момента.
+func (w *watchdog) kick() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.fired && !w.stopped {
+		w.t.Reset(w.wait)
+	}
+}
+
+// stop останавливает таймер насовсем и сообщает, успел ли он сработать.
+func (w *watchdog) stop() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.stopped = true
+	w.t.Stop()
+	return w.fired
+}
+
+// kickReader толкает watchdog на каждом чтении тела запроса: пока тело
+// уходит к цели, запрос не молчит.
+type kickReader struct {
+	io.ReadCloser
+	kick func()
+}
+
+func (k *kickReader) Read(p []byte) (int, error) {
+	n, err := k.ReadCloser.Read(p)
+	if n > 0 {
+		k.kick()
+	}
+	return n, err
+}
