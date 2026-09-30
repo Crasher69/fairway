@@ -109,6 +109,10 @@ func main() {
 		return 0
 	}
 	ratings.OnBan = func(domain, proxy, reason string, until time.Time) {
+		// Рейтинг знает прокси по id, а в логе нужно имя.
+		if p, ok := currentConfig.Load().(*config.Config).ProxyByID(proxy); ok {
+			proxy = p.Name
+		}
 		logger.Printf(i18n.T("ban: %s for %s (%s) until %s"), proxy, domain, reason, until.Format("15:04:05"))
 	}
 	pool.Select = ratings.Select
@@ -117,6 +121,10 @@ func main() {
 	if err := ratings.Load(ratingsPath); err != nil {
 		logger.Printf(i18n.T("ratings not loaded: %v"), err)
 	}
+	// Прежние версии сохраняли рейтинг по именам прокси — переносим его на
+	// id, чтобы накопленное не пропало.
+	ratings.Rekey(namesToIDs(cfg))
+	ratings.Retain(proxyIDs(cfg))
 	go ratings.Autosave(ctx, ratingsPath, *ratingSave,
 		func(err error) { logger.Printf(i18n.T("ratings not saved: %v"), err) })
 
@@ -160,11 +168,7 @@ func main() {
 		// Прокси, которого больше нет в конфиге, не должен оставаться в
 		// таблицах доменов со своими замерами и баном. Здесь, а не в
 		// обработчике удаления: прокси убирают и правкой файла руками.
-		names := make([]string, 0, len(updated.Proxies))
-		for _, p := range updated.Proxies {
-			names = append(names, p.Name)
-		}
-		ratings.Retain(names)
+		ratings.Retain(proxyIDs(updated))
 		if updated.Lang() != i18n.Current() {
 			i18n.Set(updated.Lang())
 			logger.Printf(i18n.T("language: %s"), updated.Lang())
@@ -251,10 +255,36 @@ func router(pool *proxypool.Pool) func(string, []string) (*forward.Route, error)
 		return &forward.Route{
 			Upstream: lease.Proxy.Upstream,
 			Name:     lease.Proxy.Name,
+			ID:       lease.Proxy.ID,
 			MITM:     lease.Rule.MITM,
 			Release:  lease.Release,
 		}, nil
 	}
+}
+
+// proxyIDs — id всех прокси конфига.
+func proxyIDs(cfg *config.Config) []string {
+	ids := make([]string, 0, len(cfg.Proxies))
+	for _, p := range cfg.Proxies {
+		ids = append(ids, p.ID)
+	}
+	return ids
+}
+
+// namesToIDs — имя прокси -> его id, для переноса рейтинга со старых ключей.
+// Имя, совпавшее с чьим-то id, пропускается: такой ключ уже и есть id.
+func namesToIDs(cfg *config.Config) map[string]string {
+	ids := make(map[string]bool, len(cfg.Proxies))
+	for _, p := range cfg.Proxies {
+		ids[p.ID] = true
+	}
+	out := make(map[string]string, len(cfg.Proxies))
+	for _, p := range cfg.Proxies {
+		if !ids[p.Name] {
+			out[p.Name] = p.ID
+		}
+	}
+	return out
 }
 
 func logSample(logger *log.Logger, s forward.Sample) {

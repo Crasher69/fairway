@@ -220,6 +220,7 @@ func (s *Server) domains(w http.ResponseWriter, r *http.Request) {
 }
 
 type proxyState struct {
+	ID          string    `json:"id"`
 	Name        string    `json:"name"`
 	Upstream    string    `json:"upstream"`
 	Active      int64     `json:"active"`
@@ -273,11 +274,14 @@ func (s *Server) domain(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Рейтинг и счётчики пула держатся по id, человеку же нужно имя.
+	names := map[string]string{}
 	active := map[string]int64{}
 	upstreams := map[string]string{}
 	for _, p := range s.Pool.Proxies() {
-		active[p.Name] = p.Active()
-		upstreams[p.Name] = p.Upstream.Name
+		names[p.ID] = p.Name
+		active[p.ID] = p.Active()
+		upstreams[p.ID] = p.Upstream.Name
 	}
 
 	snap := s.Ratings.Snapshot(domain)
@@ -291,7 +295,7 @@ func (s *Server) domain(w http.ResponseWriter, r *http.Request) {
 	var weightSum float64
 	var alive, probing int
 	weights := make(map[string]float64, len(snap.Proxies))
-	for name, st := range snap.Proxies {
+	for id, st := range snap.Proxies {
 		if now.Before(st.BannedUntil) {
 			continue
 		}
@@ -300,7 +304,7 @@ func (s *Server) domain(w http.ResponseWriter, r *http.Request) {
 			// Непроверенный без висящих соединений получит следующий
 			// запрос вне очереди; с висящими — только через разведку.
 			// Цены у него нет, в лотерее он не участвует.
-			if inFlight[name] == 0 {
+			if inFlight[id] == 0 {
 				probing++
 			}
 			continue
@@ -309,15 +313,20 @@ func (s *Server) domain(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		wgt := math.Pow(1/st.Cost, sharpness)
-		weights[name] = wgt
+		weights[id] = wgt
 		weightSum += wgt
 	}
 
-	for name, st := range snap.Proxies {
+	for id, st := range snap.Proxies {
+		name, ok := names[id]
+		if !ok {
+			name = id // прокси уже нет в пуле, а замеры ещё не вычищены
+		}
 		row := proxyState{
+			ID:          id,
 			Name:        name,
-			Upstream:    upstreams[name],
-			Active:      active[name],
+			Upstream:    upstreams[id],
+			Active:      active[id],
 			Samples:     st.Samples,
 			Requests:    st.Requests,
 			Errors:      st.Errors,
@@ -336,14 +345,14 @@ func (s *Server) domain(w http.ResponseWriter, r *http.Request) {
 		case probing > 0:
 			// Следующий запрос уйдёт одному из непроверенных — ровно так
 			// делает Select, остальным в этот момент не достаётся ничего.
-			if st.Samples < rating.MinSamples && inFlight[name] == 0 {
+			if st.Samples < rating.MinSamples && inFlight[id] == 0 {
 				row.Share = 1 / float64(probing)
 			}
 		case alive > 0:
 			// Разведка раздаёт epsilon поровну, остальное — по весу.
 			row.Share = epsilon / float64(alive)
 			if weightSum > 0 {
-				row.Share += (1 - epsilon) * weights[name] / weightSum
+				row.Share += (1 - epsilon) * weights[id] / weightSum
 			}
 		}
 		if !row.Banned {
@@ -363,10 +372,21 @@ func (s *Server) domain(w http.ResponseWriter, r *http.Request) {
 
 // unban снимает бан с прокси для домена — руками, из панели. Бан ставится
 // автоматически и сам истечёт, но ждать пять минут, когда точно знаешь,
-// что 403 был разовым, незачем.
+// что 403 был разовым, незачем. Прокси указывается по id; имя тоже
+// понимается — так удобнее звать API руками.
 func (s *Server) unban(w http.ResponseWriter, r *http.Request) {
 	domain, proxy := r.PathValue("domain"), r.PathValue("proxy")
-	if !s.Ratings.Unban(domain, proxy) {
+	id := proxy
+	for _, p := range s.Pool.Proxies() {
+		if p.ID == proxy {
+			id = p.ID
+			break
+		}
+		if p.Name == proxy {
+			id = p.ID
+		}
+	}
+	if !s.Ratings.Unban(domain, id) {
 		http.Error(w, i18n.Sprintf("proxy %s is not banned for %s", proxy, domain), http.StatusNotFound)
 		return
 	}
@@ -391,6 +411,7 @@ func (s *Server) proxies(w http.ResponseWriter, r *http.Request) {
 	rows := make([]proxyState, 0, 16)
 	for _, p := range s.Pool.Proxies() {
 		rows = append(rows, proxyState{
+			ID:       p.ID,
 			Name:     p.Name,
 			Upstream: p.Upstream.Name,
 			Active:   p.Active(),

@@ -24,8 +24,9 @@ import (
 // правило домена (mitm) и наличие Issuer.
 type Server struct {
 	// Pick выбирает маршрут для домена. Обязателен. Ошибка означает
-	// «нет живого прокси» — клиент получит 503. avoid — имена маршрутов,
-	// через которые этот запрос уже не прошёл; брать их снова нельзя.
+	// «нет живого прокси» — клиент получит 503. avoid — ключи маршрутов
+	// (ID, а без него имя), через которые этот запрос уже не прошёл; брать
+	// их снова нельзя.
 	Pick func(domain string, avoid []string) (*Route, error)
 	// Authorize решает, пускать ли клиента, по его логину и паролю из
 	// Proxy-Authorization (ok — заголовок был и разобрался). nil — пускать
@@ -122,7 +123,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		sample Sample
 	)
 	for {
-		sample = Sample{Domain: domain, Upstream: route.Name}
+		sample = route.sample(domain)
 		upConn, err = s.dialTunnel(r.Context(), route, target, &sample)
 		if err == nil {
 			break
@@ -219,7 +220,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			route = next
-			sample = Sample{Domain: domain, Upstream: route.Name}
+			sample = route.sample(domain)
 			upConn, err = s.dialTunnel(r.Context(), route, target, &sample)
 			if err == nil {
 				break
@@ -283,7 +284,7 @@ func (s *Server) dialTunnel(ctx context.Context, route *Route, target string, sa
 // в этом случае возвращается прежний маршрут, чтобы вызывающему было что
 // освобождать (повторное освобождение безвредно).
 func (s *Server) nextRoute(domain string, failed *Route, avoid *[]string) (*Route, error) {
-	*avoid = append(*avoid, failed.Name)
+	*avoid = append(*avoid, failed.key())
 	failed.release()
 	if len(*avoid) >= maxAttempts {
 		return failed, i18n.Errorf("%d upstreams tried", len(*avoid))
@@ -324,7 +325,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		resp   *http.Response
 	)
 	for {
-		sample = Sample{Domain: domain, Upstream: route.Name}
+		sample = route.sample(domain)
 		resp, err = s.forwardHTTP(route, r, &sample)
 		if err == nil {
 			break

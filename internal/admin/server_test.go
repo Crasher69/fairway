@@ -21,8 +21,8 @@ import (
 const testConfig = `{
   "defaults": {"list": "", "allow_direct": false, "ban_duration": "5m"},
   "proxies": [
-    {"name": "fast", "url": "http://1.1.1.1:8080"},
-    {"name": "slow", "url": "http://2.2.2.2:8080"}
+    {"id": "id-fast", "name": "fast", "url": "http://1.1.1.1:8080"},
+    {"id": "id-slow", "name": "slow", "url": "http://2.2.2.2:8080"}
   ],
   "lists": [{"name": "main", "proxies": ["fast", "slow"]}],
   "domains": [{"pattern": "example.com", "list": "main", "max_conns_per_proxy": 8, "mitm": true}]
@@ -69,10 +69,13 @@ func observe(srv *Server, s forward.Sample) {
 	srv.Recorder.Observe(s)
 }
 
+// sample — замер через прокси из testConfig; рейтинг копится по id, а
+// id там — «id-» и имя.
 func sample(domain, proxy string, ttfb time.Duration, status int, err error) forward.Sample {
 	return forward.Sample{
 		Domain:   domain,
 		Upstream: proxy,
+		ProxyID:  "id-" + proxy,
 		Connect:  10 * time.Millisecond,
 		TTFB:     ttfb,
 		Duration: ttfb + time.Second,
@@ -456,7 +459,8 @@ func TestUnbanFromPanel(t *testing.T) {
 		t.Fatal("прокси не забанен, проверять нечего")
 	}
 
-	resp, err := http.Post(ts.URL+"/api/domains/example.com/unban/slow", "", nil)
+	// Панель снимает бан по id.
+	resp, err := http.Post(ts.URL+"/api/domains/example.com/unban/id-slow", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,9 +475,12 @@ func TestUnbanFromPanel(t *testing.T) {
 		if p.Banned {
 			t.Errorf("после снятия бана %s всё ещё забанен", p.Name)
 		}
+		if p.ID == "id-slow" && p.Name != "slow" {
+			t.Errorf("прокси id-slow показан под именем %q", p.Name)
+		}
 	}
 
-	// Повторно снимать нечего.
+	// Повторно снимать нечего — и по имени тоже: имя понимается как id.
 	again, err := http.Post(ts.URL+"/api/domains/example.com/unban/slow", "", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -481,5 +488,18 @@ func TestUnbanFromPanel(t *testing.T) {
 	again.Body.Close()
 	if again.StatusCode != http.StatusNotFound {
 		t.Errorf("повторное снятие: статус %d, ожидался 404", again.StatusCode)
+	}
+
+	// Бан по имени тоже снимается: так удобнее звать API руками.
+	for i := 0; i < 3; i++ {
+		observe(srv, sample("example.com", "slow", 0, 0, errors.New("connection refused")))
+	}
+	byName, err := http.Post(ts.URL+"/api/domains/example.com/unban/slow", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName.Body.Close()
+	if byName.StatusCode != http.StatusOK {
+		t.Errorf("снятие бана по имени: статус %d", byName.StatusCode)
 	}
 }

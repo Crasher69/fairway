@@ -7,6 +7,7 @@ import "time"
 type Sample struct {
 	Domain   string        // домен цели, без порта
 	Upstream string        // имя апстрима, через который шли
+	ProxyID  string        // постоянный id прокси — ключ рейтинга
 	Connect  time.Duration // установка соединения с целью через апстрим
 	TTFB     time.Duration // от установленного соединения до первого байта ответа
 	Duration time.Duration // полное время обработки запроса

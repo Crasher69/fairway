@@ -113,7 +113,7 @@ func isUpgrade(h http.Header) bool {
 // и отличает MITM от прозрачного туннеля, где после «200 Connection
 // established» менять уже нечего.
 func (s *Server) roundTrip(up *mitmUpstream, client net.Conn, clientReader *bufio.Reader, req *http.Request, domain string) Sample {
-	sample := Sample{Domain: domain, Upstream: up.route.Name}
+	sample := up.route.sample(domain)
 	started := time.Now()
 
 	req.URL.Scheme = "https"
@@ -199,7 +199,7 @@ func (s *Server) roundTrip(up *mitmUpstream, client net.Conn, clientReader *bufi
 
 		up.switchTo(next)
 		rewind()
-		sample = Sample{Domain: domain, Upstream: next.Name}
+		sample = next.sample(domain)
 	}
 	defer resp.Body.Close()
 

@@ -421,7 +421,7 @@ function renderProxies(proxies) {
       }
       const unban = button(t('Unban'), () => {
         $('config-error').hidden = true;
-        send('POST', `api/domains/${encodeURIComponent(state.domain)}/unban/${encodeURIComponent(p.name)}`)
+        send('POST', `api/domains/${encodeURIComponent(state.domain)}/unban/${encodeURIComponent(p.id)}`)
           .then((data) => { renderProxies(data.proxies); refreshDomains(); toast(t('Ban lifted from {name}', { name: p.name })); })
           .catch(showConfigError);
       }, 'ghost small unban');
