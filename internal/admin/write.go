@@ -123,8 +123,8 @@ func (s *Server) addProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 // updateProxy правит существующий прокси, в том числе переименовывает.
-// При переименовании ссылки в листах чинятся здесь же — иначе правка имени
-// разваливала бы конфиг.
+// Листы ссылаются на прокси по id, а id правка не меняет, поэтому
+// переименование привязок не трогает.
 func (s *Server) updateProxy(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var body config.Proxy
@@ -145,16 +145,8 @@ func (s *Server) updateProxy(w http.ResponseWriter, r *http.Request) {
 		if index < 0 {
 			return i18n.Errorf("proxy %q not found", name)
 		}
+		body.ID = cfg.Proxies[index].ID
 		cfg.Proxies[index] = body
-		if body.Name != name {
-			for i := range cfg.Lists {
-				for j, ref := range cfg.Lists[i].Proxies {
-					if ref == name {
-						cfg.Lists[i].Proxies[j] = body.Name
-					}
-				}
-			}
-		}
 		return nil
 	})
 }
@@ -165,19 +157,21 @@ func (s *Server) deleteProxy(w http.ResponseWriter, r *http.Request) {
 		// Сначала выкидываем из листов: иначе проверка честно упадёт на
 		// ссылке в никуда, и пользователь получит невнятную ошибку вместо
 		// ожидаемого удаления.
-		for i := range cfg.Lists {
-			cfg.Lists[i].Proxies = without(cfg.Lists[i].Proxies, name)
-		}
-		before := len(cfg.Proxies)
+		id := ""
 		kept := cfg.Proxies[:0]
 		for _, p := range cfg.Proxies {
-			if p.Name != name {
-				kept = append(kept, p)
+			if p.Name == name {
+				id = p.ID
+				continue
 			}
+			kept = append(kept, p)
 		}
 		cfg.Proxies = kept
-		if len(cfg.Proxies) == before {
+		if id == "" {
 			return i18n.Errorf("proxy %q not found", name)
+		}
+		for i := range cfg.Lists {
+			cfg.Lists[i].Proxies = without(cfg.Lists[i].Proxies, id)
 		}
 		return nil
 	})
@@ -240,7 +234,8 @@ func (s *Server) updateList(w http.ResponseWriter, r *http.Request) {
 }
 
 // bulkProxies — одно действие над несколькими прокси разом: удалить,
-// положить в лист, убрать из листа. Одна правка конфига на всю пачку, а не
+// положить в лист, убрать из листа. Прокси приходят по именам, в листы
+// ложатся их id. Одна правка конфига на всю пачку, а не
 // цикл из одиночных запросов: полсотни перезаписей файла — это полсотни
 // шансов застать конфиг применённым наполовину.
 func (s *Server) bulkProxies(w http.ResponseWriter, r *http.Request) {
@@ -256,20 +251,20 @@ func (s *Server) bulkProxies(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, i18n.T("no proxies selected"), http.StatusBadRequest)
 		return
 	}
-	chosen := make(map[string]bool, len(body.Names))
-	for _, n := range body.Names {
-		chosen[n] = true
-	}
-
 	s.applyEdit(w, func(cfg *config.Config) error {
-		known := make(map[string]bool, len(cfg.Proxies))
+		idOf := make(map[string]string, len(cfg.Proxies))
 		for _, p := range cfg.Proxies {
-			known[p.Name] = true
+			idOf[p.Name] = p.ID
 		}
+		ids := make([]string, 0, len(body.Names))
+		chosen := make(map[string]bool, len(body.Names)) // id
 		for _, n := range body.Names {
-			if !known[n] {
+			id, ok := idOf[n]
+			if !ok {
 				return i18n.Errorf("proxy %q not found", n)
 			}
+			ids = append(ids, id)
+			chosen[id] = true
 		}
 
 		switch body.Action {
@@ -279,7 +274,7 @@ func (s *Server) bulkProxies(w http.ResponseWriter, r *http.Request) {
 			}
 			kept := cfg.Proxies[:0]
 			for _, p := range cfg.Proxies {
-				if !chosen[p.Name] {
+				if !chosen[p.ID] {
 					kept = append(kept, p)
 				}
 			}
@@ -300,15 +295,15 @@ func (s *Server) bulkProxies(w http.ResponseWriter, r *http.Request) {
 				}
 				// Порядок отмеченных сохраняем, уже лежащие в листе
 				// не дублируем.
-				for _, n := range body.Names {
-					if !present[n] {
-						cfg.Lists[i].Proxies = append(cfg.Lists[i].Proxies, n)
-						present[n] = true
+				for _, id := range ids {
+					if !present[id] {
+						cfg.Lists[i].Proxies = append(cfg.Lists[i].Proxies, id)
+						present[id] = true
 					}
 				}
 				return nil
 			}
-			cfg.Lists = append(cfg.Lists, config.List{Name: body.List, Proxies: append([]string(nil), body.Names...)})
+			cfg.Lists = append(cfg.Lists, config.List{Name: body.List, Proxies: ids})
 			return nil
 
 		case "remove_from_list":
@@ -519,17 +514,17 @@ func (s *Server) importProxies(w http.ResponseWriter, r *http.Request) {
 		// Сразу положить импортированное в лист — иначе после импорта
 		// пришлось бы вручную отмечать полсотни галочек.
 		if body.List != "" {
-			names := make([]string, 0, len(result.Added))
+			ids := make([]string, 0, len(result.Added))
 			for _, p := range result.Added {
-				names = append(names, p.Name)
+				ids = append(ids, p.ID)
 			}
 			for i, list := range cfg.Lists {
 				if list.Name == body.List {
-					cfg.Lists[i].Proxies = append(cfg.Lists[i].Proxies, names...)
+					cfg.Lists[i].Proxies = append(cfg.Lists[i].Proxies, ids...)
 					return nil
 				}
 			}
-			cfg.Lists = append(cfg.Lists, config.List{Name: body.List, Proxies: names})
+			cfg.Lists = append(cfg.Lists, config.List{Name: body.List, Proxies: ids})
 		}
 		return nil
 	})

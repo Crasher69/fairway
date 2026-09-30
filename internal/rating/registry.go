@@ -42,7 +42,8 @@ type Registry struct {
 	// BanDuration отдаёт срок бана для домена (обычно из правила конфига).
 	// Если nil или возвращает 0, баны не выставляются.
 	BanDuration func(domain string) time.Duration
-	// OnBan вызывается, когда прокси выключается для домена. Может быть nil.
+	// OnBan вызывается, когда прокси выключается для домена; proxy — его
+	// id. Может быть nil.
 	OnBan func(domain, proxy, reason string, until time.Time)
 	// EvictAfter — через сколько простоя пара забывается. 0 означает
 	// DefaultEvictAfter, отрицательное — не вытеснять вовсе.
@@ -53,7 +54,7 @@ type Registry struct {
 	Rand func() float64
 
 	mu       sync.RWMutex
-	byDomain map[string]map[string]*Stats
+	byDomain map[string]map[string]*Stats // домен -> id прокси -> статистика
 }
 
 // NewRegistry создаёт пустой реестр.
@@ -128,20 +129,19 @@ func (r *Registry) Unban(domain, proxy string) bool {
 }
 
 // Retain забывает всё, что накоплено по прокси, которых больше нет в
-// конфиге. Возвращает число снесённых пар.
+// конфиге; known — id оставшихся прокси. Возвращает число снесённых пар.
 //
 // Вызывается после применения конфига, а не из обработчика удаления:
 // прокси исчезает не только кнопкой в панели, но и правкой файла руками,
 // а результат должен быть один. Удалённый прокси иначе остался бы в
 // таблице домена с замерами и баном — «я его убрал, а он висит».
 //
-// Переименование прокси здесь же означает сброс его статистики: старое имя
-// исчезло, значит, исчезли и его замеры. Так же ведёт себя пул, который
-// сопоставляет прокси по имени.
+// Рейтинг держится по id, поэтому переименованный прокси свои замеры
+// не теряет.
 func (r *Registry) Retain(known []string) int {
 	keep := make(map[string]bool, len(known))
-	for _, name := range known {
-		keep[name] = true
+	for _, id := range known {
+		keep[id] = true
 	}
 
 	r.mu.Lock()
@@ -159,6 +159,33 @@ func (r *Registry) Retain(known []string) int {
 		}
 	}
 	return removed
+}
+
+// Rekey переводит статистику со старых ключей на новые: ids — старый ключ
+// -> id. Нужен один раз, при переходе на id: рейтинги, сохранённые прежними
+// версиями, лежат по именам прокси, и без переноса накопленное пропало бы.
+// Если по id уже есть статистика, она остаётся, а запись по имени
+// выбрасывается: свежие замеры важнее старых. Возвращает число
+// перенесённых пар.
+func (r *Registry) Rekey(ids map[string]string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	moved := 0
+	for _, byProxy := range r.byDomain {
+		for old, s := range byProxy {
+			id, ok := ids[old]
+			if !ok || id == old {
+				continue
+			}
+			delete(byProxy, old)
+			if _, taken := byProxy[id]; taken {
+				continue
+			}
+			byProxy[id] = s
+			moved++
+		}
+	}
+	return moved
 }
 
 // Evict забывает пары, которые не использовались дольше EvictAfter, и
@@ -197,11 +224,15 @@ func (r *Registry) Evict() int {
 
 // Observe скармливает рейтингу замер завершённого запроса.
 func (r *Registry) Observe(sample forward.Sample) {
-	if sample.Domain == "" || sample.Upstream == "" {
+	key := sample.ProxyID
+	if key == "" {
+		key = sample.Upstream
+	}
+	if sample.Domain == "" || key == "" {
 		return
 	}
 	now := r.now()
-	stats := r.Stats(sample.Domain, sample.Upstream)
+	stats := r.Stats(sample.Domain, key)
 
 	var banFor time.Duration
 	if r.BanDuration != nil {
@@ -222,7 +253,7 @@ func (r *Registry) Observe(sample forward.Sample) {
 
 	if reason != "" && r.OnBan != nil {
 		_, until, _ := stats.Banned(now)
-		r.OnBan(sample.Domain, sample.Upstream, reason, until)
+		r.OnBan(sample.Domain, key, reason, until)
 	}
 }
 
@@ -257,7 +288,7 @@ func (r *Registry) Select(domain string, candidates []proxypool.Candidate) *prox
 	alive := make([]proxypool.Candidate, 0, len(candidates))
 	fresh := make([]*proxypool.Proxy, 0, len(candidates))
 	for _, c := range candidates {
-		stats := r.Stats(domain, c.Proxy.Name)
+		stats := r.Stats(domain, c.Proxy.ID)
 		if banned, _, _ := stats.Banned(now); banned {
 			continue
 		}
@@ -280,7 +311,7 @@ func (r *Registry) Select(domain string, candidates []proxypool.Candidate) *prox
 	weights := make([]float64, len(alive))
 	var total float64
 	for i, c := range alive {
-		stats := r.Stats(domain, c.Proxy.Name)
+		stats := r.Stats(domain, c.Proxy.ID)
 		if stats.Samples() < minSamples {
 			continue // замеров нет — цена не значит ничего, в лотерее не участвует
 		}
@@ -319,7 +350,7 @@ func (r *Registry) intn(n int) int {
 // DomainSnapshot — состояние всех прокси одного домена, для админки.
 type DomainSnapshot struct {
 	Domain  string              `json:"domain"`
-	Proxies map[string]Snapshot `json:"proxies"`
+	Proxies map[string]Snapshot `json:"proxies"` // по id прокси
 }
 
 // Snapshot отдаёт состояние одного домена.

@@ -171,12 +171,8 @@ func TestDeleteProxyCleansLists(t *testing.T) {
 	if len(disk.Proxies) != 1 || disk.Proxies[0].Name != "fast" {
 		t.Errorf("прокси после удаления: %+v", disk.Proxies)
 	}
-	for _, l := range disk.Lists {
-		for _, ref := range l.Proxies {
-			if ref == "slow" {
-				t.Errorf("лист %s всё ещё ссылается на удалённый прокси", l.Name)
-			}
-		}
+	if got := members(disk, "main"); got != "fast" {
+		t.Errorf("лист main после удаления: %s", got)
 	}
 }
 
@@ -278,7 +274,7 @@ func TestReloadPicksUpManualEdit(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("статус %d: %s", code, body)
 	}
-	if got := e.read().Lists[0].Proxies; len(got) != 1 || got[0] != "fast" {
+	if got := members(e.read(), "main"); got != "fast" {
 		t.Errorf("после перечитывания лист = %v", got)
 	}
 }
@@ -359,10 +355,11 @@ func TestUpdateProxy(t *testing.T) {
 	}
 }
 
-// TestRenameProxyFixesLists — переименование без починки ссылок развалило бы
-// конфиг: лист остался бы указывать на несуществующее имя.
-func TestRenameProxyFixesLists(t *testing.T) {
+// TestRenameProxyKeepsLists — листы держат прокси по id, поэтому
+// переименованный прокси остаётся в своих листах с тем же id.
+func TestRenameProxyKeepsLists(t *testing.T) {
 	e := newEditable(t)
+	before, _ := proxyNamed(e.onDisk(t), "slow")
 
 	code, body := send(t, "PUT", e.url+"/api/proxies/slow",
 		config.Proxy{Name: "slow-new", Scheme: "http", Host: "2.2.2.2", Port: 8080})
@@ -378,12 +375,11 @@ func TestRenameProxyFixesLists(t *testing.T) {
 	if !names["slow-new"] || names["slow"] {
 		t.Errorf("прокси после переименования: %v", names)
 	}
-	for _, l := range disk.Lists {
-		for _, ref := range l.Proxies {
-			if ref == "slow" {
-				t.Errorf("лист %s ссылается на старое имя", l.Name)
-			}
-		}
+	if got := members(disk, "main"); got != "fast,slow-new" {
+		t.Errorf("лист main после переименования: %s", got)
+	}
+	if after, _ := proxyNamed(disk, "slow-new"); after.ID != before.ID {
+		t.Errorf("id сменился при переименовании: %q -> %q", before.ID, after.ID)
 	}
 }
 
@@ -551,7 +547,7 @@ func TestBulkProxies(t *testing.T) {
 		t.Fatalf("add_to_list: %d %s", status, body)
 	}
 	cfg := e.onDisk(t)
-	if got := findList(cfg, "picked"); got == nil || strings.Join(got.Proxies, ",") != "fast,third" {
+	if got := members(cfg, "picked"); got != "fast,third" {
 		t.Fatalf("лист picked после добавления: %+v", got)
 	}
 
@@ -559,16 +555,16 @@ func TestBulkProxies(t *testing.T) {
 	send(t, "POST", e.url+"/api/proxies/bulk", map[string]any{
 		"names": []string{"third", "slow"}, "action": "add_to_list", "list": "picked",
 	})
-	if got := findList(e.onDisk(t), "picked"); strings.Join(got.Proxies, ",") != "fast,third,slow" {
-		t.Errorf("лист picked после повторного добавления: %v", got.Proxies)
+	if got := members(e.onDisk(t), "picked"); got != "fast,third,slow" {
+		t.Errorf("лист picked после повторного добавления: %v", got)
 	}
 
 	// Убрать из листа.
 	send(t, "POST", e.url+"/api/proxies/bulk", map[string]any{
 		"names": []string{"third"}, "action": "remove_from_list", "list": "picked",
 	})
-	if got := findList(e.onDisk(t), "picked"); strings.Join(got.Proxies, ",") != "fast,slow" {
-		t.Errorf("лист picked после удаления из него: %v", got.Proxies)
+	if got := members(e.onDisk(t), "picked"); got != "fast,slow" {
+		t.Errorf("лист picked после удаления из него: %v", got)
 	}
 
 	// Удалить пачкой: исчезают и из листов. Лист main остаётся с одним slow.
@@ -582,8 +578,8 @@ func TestBulkProxies(t *testing.T) {
 	if len(cfg.Proxies) != 1 || cfg.Proxies[0].Name != "slow" {
 		t.Errorf("прокси после массового удаления: %+v", cfg.Proxies)
 	}
-	if got := findList(cfg, "main"); strings.Join(got.Proxies, ",") != "slow" {
-		t.Errorf("лист main после массового удаления: %v", got.Proxies)
+	if got := members(cfg, "main"); got != "slow" {
+		t.Errorf("лист main после массового удаления: %v", got)
 	}
 
 	// Ошибки: пустой набор, неизвестный прокси, неизвестное действие.
@@ -604,6 +600,33 @@ func TestBulkProxies(t *testing.T) {
 	if got := e.onDisk(t); len(got.Proxies) != 1 {
 		t.Errorf("после отклонённой правки конфиг на диске изменился: %+v", got.Proxies)
 	}
+}
+
+// members — имена прокси листа через запятую (в самом листе лежат id).
+func members(cfg *config.Config, list string) string {
+	l := findList(cfg, list)
+	if l == nil {
+		return "<нет листа>"
+	}
+	names := make([]string, 0, len(l.Proxies))
+	for _, id := range l.Proxies {
+		p, ok := cfg.ProxyByID(id)
+		if !ok {
+			names = append(names, "?"+id)
+			continue
+		}
+		names = append(names, p.Name)
+	}
+	return strings.Join(names, ",")
+}
+
+func proxyNamed(cfg *config.Config, name string) (config.Proxy, bool) {
+	for _, p := range cfg.Proxies {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return config.Proxy{}, false
 }
 
 func findList(cfg *config.Config, name string) *config.List {

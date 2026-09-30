@@ -80,6 +80,13 @@ func (w *Watcher) poll(onError func(error)) (*Config, bool) {
 		w.failed = current
 		return nil, false
 	}
+	if cfg.Migrated() {
+		// Load дописал в файл id прокси — это наша же запись, а не
+		// новая правка, перечитывать её не нужно.
+		if written, err := stamp(w.path); err == nil {
+			current = written
+		}
+	}
 	w.last = current
 	return cfg, true
 }
