@@ -196,6 +196,20 @@ type domainRow struct {
 	BestCost float64 `json:"best_cost"`
 }
 
+// listMembers — id прокси, среди которых Select выбирает для домена:
+// члены листа его правила. nil — правила нет, фильтровать не по чему.
+func (s *Server) listMembers(domain string) map[string]bool {
+	rule, ok := s.Pool.Rule(domain)
+	if !ok {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, id := range s.Pool.ListMembers(rule.List) {
+		out[id] = true
+	}
+	return out
+}
+
 // domains перечисляет домены, по которым реально шёл трафик: правило может
 // быть wildcard, а знать надо, какие живые домены под него попали.
 func (s *Server) domains(w http.ResponseWriter, r *http.Request) {
@@ -208,11 +222,17 @@ func (s *Server) domains(w http.ResponseWriter, r *http.Request) {
 			row.List = rule.List
 			row.MITM = rule.MITM
 		}
+		inList := s.listMembers(domain)
 		snap := s.Ratings.Snapshot(domain)
-		row.Proxies = len(snap.Proxies)
-		for _, st := range snap.Proxies {
+		for id, st := range snap.Proxies {
+			// Запросы и ошибки домена — вся его история; число прокси,
+			// баны и лучшая цена — только по тем, кто сейчас в листе.
 			row.Requests += st.Requests
 			row.Errors += st.Errors
+			if inList != nil && !inList[id] {
+				continue
+			}
+			row.Proxies++
 			if now.Before(st.BannedUntil) {
 				row.Banned++
 				continue
@@ -303,7 +323,18 @@ func (s *Server) domain(w http.ResponseWriter, r *http.Request) {
 		upstreams[p.ID] = p.Upstream.Name
 	}
 
+	// Замеры по убранным из листа прокси в рейтинге остаются, но в
+	// таблицу и в долю трафика им попадать нельзя: Select их уже не
+	// выбирает, а без замеров они висели бы сверху как «не проверен» и
+	// забирали всю долю у настоящих.
 	snap := s.Ratings.Snapshot(domain)
+	if inList := s.listMembers(domain); inList != nil {
+		for id := range snap.Proxies {
+			if !inList[id] {
+				delete(snap.Proxies, id)
+			}
+		}
+	}
 	// Доля трафика повторяет арифметику выбора целиком, вместе с разведкой:
 	// без неё лидер на локальном стенде показывал бы 99.99%, хотя каждый
 	// десятый запрос уходит случайному прокси. Таблица должна показывать то,

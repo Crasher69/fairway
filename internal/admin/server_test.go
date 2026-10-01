@@ -543,3 +543,29 @@ func TestDomainViewShowsProbation(t *testing.T) {
 		t.Errorf("доли: на проверке %v, остальные %v — проба уходит вне очереди", back.Share, fast.Share)
 	}
 }
+
+// Прокси, убранный из листа, остаётся в рейтинге домена без замеров. В
+// таблице его быть не должно: Select его уже не выбирает, а как
+// «не проверенный» он забирал бы в таблице всю долю трафика у настоящих.
+func TestDomainViewHidesProxiesOutsideList(t *testing.T) {
+	srv, ts := newTestServer(t, "")
+	for i := 0; i < 10; i++ {
+		observe(srv, sample("example.com", "fast", 20*time.Millisecond, 200, nil))
+	}
+	srv.Ratings.Stats("example.com", "id-removed") // был в листе, замеров не набрал
+
+	var got domainResponse
+	getJSON(t, ts.URL, "/api/domains/example.com", &got)
+
+	for _, p := range got.Proxies {
+		if p.ID == "id-removed" {
+			t.Fatalf("прокси вне листа в таблице: %+v", p)
+		}
+	}
+	if len(got.Proxies) != 1 || got.Proxies[0].Name != "fast" {
+		t.Fatalf("в таблице %+v, ожидался только fast", got.Proxies)
+	}
+	if got.Proxies[0].Share < 0.99 {
+		t.Errorf("доля fast %v: прокси вне листа отнял её", got.Proxies[0].Share)
+	}
+}

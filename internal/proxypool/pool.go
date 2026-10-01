@@ -250,6 +250,20 @@ func (p *Pool) InFlight(domain string) map[string]int {
 	return st.(*domainState).snapshot()
 }
 
+// ListMembers — id прокси, входящих в лист сейчас. Для панели: рейтинг
+// домена хранит замеры и по прокси, убранным из листа (вернут — замеры
+// пригодятся), но выбор идёт только среди членов листа.
+func (p *Pool) ListMembers(name string) []string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	members := p.lists[name]
+	out := make([]string, 0, len(members))
+	for _, m := range members {
+		out = append(out, m.ID)
+	}
+	return out
+}
+
 // Rule возвращает правило, под которое попадает домен.
 func (p *Pool) Rule(domain string) (Rule, bool) {
 	p.mu.RLock()
