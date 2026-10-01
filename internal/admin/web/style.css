@@ -206,9 +206,10 @@ code { font-family: var(--mono); font-size: 12.5px; background: var(--panel-2); 
 
 .page { padding: 24px; max-width: 1400px; margin: 0 auto; }
 .settings { max-width: 1040px; padding-bottom: 80px; }
-/* Таблице прокси тесно в колонке настроек: на широком экране она
-   занимает всю ширину, формы над ней при этом не растягиваются. */
-.settings.wide { max-width: none; }
+/* Таблицам прокси и листов тесно в колонке настроек: на широком экране
+   они занимают всю ширину, но не больше 1600px, а формы над ними при
+   этом не растягиваются. */
+.settings.wide { max-width: 1600px; }
 .settings.wide > .page-lead, .settings.wide > .panel { max-width: 1040px; }
 
 .page-head { display: flex; align-items: center; gap: 16px; margin-bottom: 6px; }
@@ -611,6 +612,20 @@ tr.group-row td { background: var(--panel-2); padding-top: 7px; padding-bottom: 
 tbody tr.group-row:hover td { background: var(--panel-2); }
 .group-name { font-weight: 600; }
 .group-count { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; margin-left: 4px; }
+
+/* Каждая страна — отдельная карточка внутри одной таблицы: рамка вокруг
+   заголовка и строк группы, между группами — пустая строка-отступ. */
+table.grouped { border-collapse: separate; border-spacing: 0; }
+table.grouped tbody td:first-child { border-left: 1px solid var(--line); }
+table.grouped tbody td:last-child { border-right: 1px solid var(--line); }
+table.grouped tr.group-row td { border-top: 1px solid var(--line); }
+table.grouped tr.group-row td:first-child { border-top-left-radius: 10px; }
+table.grouped tr.group-row td:last-child { border-top-right-radius: 10px; }
+table.grouped tr.group-last td { border-bottom: 1px solid var(--line); }
+table.grouped tr.group-last td:first-child { border-bottom-left-radius: 10px; }
+table.grouped tr.group-last td:last-child { border-bottom-right-radius: 10px; }
+table.grouped tr.group-gap td,
+table.grouped tbody tr.group-gap:hover td { border: none; padding: 0; height: 14px; background: none; }
 
 .empty-cell { color: var(--muted); padding: 18px 10px; }
 
