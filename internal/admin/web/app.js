@@ -1649,12 +1649,33 @@ function renderProxyTable() {
     return;
   }
   const groups = groupByCountry(shown);
+  const table = $('cfg-proxies');
   // Одна группа «без страны» — заголовок над ней ничего не добавляет.
   if (groups.length === 1 && !groups[0].code) {
+    table.classList.remove('grouped');
     body.replaceChildren(...shown.map(proxyRow));
     return;
   }
-  body.replaceChildren(...groups.flatMap((g) => [groupRow(g), ...g.proxies.map(proxyRow)]));
+  // Каждая страна — своя карточка: заголовок, строки и отступ до
+  // следующей. Таблица при этом одна, чтобы колонки во всех карточках
+  // стояли ровно друг под другом.
+  table.classList.add('grouped');
+  body.replaceChildren(...groups.flatMap((g, i) => {
+    const rows = g.proxies.map(proxyRow);
+    rows[rows.length - 1].classList.add('group-last');
+    return [...(i > 0 ? [groupGap()] : []), groupRow(g), ...rows];
+  }));
+}
+
+// groupGap — пустая строка между карточками стран.
+function groupGap() {
+  const tr = document.createElement('tr');
+  tr.className = 'group-gap';
+  tr.setAttribute('aria-hidden', 'true');
+  const td = document.createElement('td');
+  td.colSpan = PROXY_COLUMNS;
+  tr.append(td);
+  return tr;
 }
 
 // groupRow — заголовок группы стран. Галочка в нём отмечает всю группу,
