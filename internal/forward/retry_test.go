@@ -138,6 +138,38 @@ func TestMITMRetriesPostWhenNotConnected(t *testing.T) {
 	}
 }
 
+// TestMITMRetriesLargePostWhenNotConnected — тело больше лимита буфера
+// повторить нельзя, но если соединение через прокси не встало, его никто
+// не читал: запрос уходит через следующий прокси целиком, а не роняет
+// обработчик на пустом rewind.
+func TestMITMRetriesLargePostWhenNotConnected(t *testing.T) {
+	var hits, got atomic.Int64
+	h := newMITMHarness(t, func(w http.ResponseWriter, r *http.Request) {
+		n, _ := io.Copy(io.Discard, r.Body)
+		got.Store(n)
+		hits.Add(1)
+		io.WriteString(w, "принято")
+	})
+	h.srv.ReplayBodyLimit = 16
+	dead := deadUpstream(t)
+	direct, _ := ParseUpstream("direct")
+	h.srv.Pick = func(_ string, avoid []string) (*Route, error) {
+		if len(avoid) == 0 {
+			return &Route{Upstream: dead, Name: "dead", MITM: true}, nil
+		}
+		return &Route{Upstream: direct, Name: "alive", MITM: true}, nil
+	}
+	resp, err := h.client.Post(h.target.URL+"/", "text/plain", strings.NewReader(strings.Repeat("x", 1000)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || string(body) != "принято" || hits.Load() != 1 || got.Load() != 1000 {
+		t.Errorf("статус %d, тело %q, запросов к цели %d, байт тела %d", resp.StatusCode, body, hits.Load(), got.Load())
+	}
+}
+
 // httpSlowCase — то же для обычного HTTP.
 func httpSlowCase(t *testing.T, hits, picks *atomic.Int64) (*http.Client, string) {
 	t.Helper()

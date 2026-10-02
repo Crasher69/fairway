@@ -246,7 +246,12 @@ func (s *Server) roundTrip(up *mitmUpstream, client net.Conn, clientReader *bufi
 		s.observe(sample)
 
 		up.switchTo(next)
-		rewind()
+		// Тела нет в буфере (больше лимита или буфер выключен) — сюда
+		// дошли только потому, что соединение не встало: тело никто не
+		// читал, и запрос уходит дальше как есть.
+		if rewind != nil {
+			rewind()
+		}
 		sample = next.sample(domain)
 	}
 	defer resp.Body.Close()
