@@ -7,10 +7,13 @@ import (
 	"crypto/sha1"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -555,5 +558,58 @@ func (c *Config) Save(path string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(raw, '\n'), 0o600)
+	// Конфиг может быть ссылкой (например, в каталог с бэкапами) —
+	// пишем в сам файл, а не заменяем ссылку обычным файлом.
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
+	return writeFileAtomic(path, append(raw, '\n'))
+}
+
+// writeFileAtomic заменяет файл целиком: пишет рядом во временный, сбрасывает
+// на диск и переименовывает поверх. Простая запись сначала обрезает файл, и
+// сбой посреди неё (питание, полный диск) оставлял пустой конфиг — с ним
+// fairway не запускается, а прокси и пароль пропадают.
+//
+// Два случая, где замена невозможна, но и прежняя запись на месте ничем не
+// хуже: каталог закрыт на запись (файл отдан сервису, а каталог — нет) и
+// файл смонтирован в контейнер отдельно (docker -v config.json:...), когда
+// rename поверх точки монтирования запрещён. Там пишем как раньше. Ошибка
+// самой записи (места нет) обратно не откатывается: старый файл цел.
+func writeFileAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			return os.WriteFile(path, data, 0o600)
+		}
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name) // после rename файла уже нет, ошибка не важна
+
+	// Права у заменённого файла должны остаться прежними.
+	if fi, err := os.Stat(path); err == nil {
+		_ = tmp.Chmod(fi.Mode().Perm())
+	}
+	_, err = tmp.Write(data)
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(name, path); err != nil {
+		return os.WriteFile(path, data, 0o600)
+	}
+	// Запись о переименовании тоже должна дойти до диска. На Windows
+	// каталог так не синхронизировать — там это молча пропускается.
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		d.Close()
+	}
+	return nil
 }

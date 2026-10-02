@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -107,6 +108,41 @@ func TestSaveLoadExample(t *testing.T) {
 	}
 	if _, err := Load(filepath.Join(t.TempDir(), "нет.json")); !os.IsNotExist(err) {
 		t.Errorf("отсутствие файла должно определяться как IsNotExist, получено %v", err)
+	}
+}
+
+// TestSaveReplacesAtomically — повторное сохранение заменяет файл целиком:
+// без временных файлов рядом, с прежними правами и через ссылку — в сам
+// файл, а не поверх ссылки.
+func TestSaveReplacesAtomically(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte("старое содержимое, длиннее нового конфига"+strings.Repeat(".", 4096)), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := Example().Save(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("после замены конфиг не читается: %v", err)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Errorf("рядом с конфигом остались лишние файлы: %v", entries)
+	}
+	if fi, err := os.Stat(path); err == nil && runtime.GOOS != "windows" && fi.Mode().Perm() != 0o640 {
+		t.Errorf("права сменились: %v, были 0640", fi.Mode().Perm())
+	}
+
+	link := filepath.Join(dir, "link.json")
+	if err := os.Symlink(path, link); err != nil {
+		t.Skipf("ссылки не поддерживаются: %v", err)
+	}
+	if err := Example().Save(link); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("ссылку заменили обычным файлом: %v %v", fi, err)
 	}
 }
 
