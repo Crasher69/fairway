@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/http2"
+
 	"fairway/internal/challenge"
 	"fairway/internal/i18n"
 )
