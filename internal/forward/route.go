@@ -1,6 +1,10 @@
 package forward
 
-import "time"
+import (
+	"time"
+
+	"fairway/internal/fingerprint"
+)
 
 // Route — выбранный под запрос маршрут: через какой апстрим идём и что с ним
 // делать. Release обязателен к вызову по завершении запроса — на нём держатся
@@ -19,6 +23,11 @@ type Route struct {
 	// Ноль — взять у сервера.
 	ConnectTimeout  time.Duration
 	ResponseTimeout time.Duration
+	// Fingerprint — браузер, под который подделывается рукопожатие с
+	// сайтом в MITM; nil — обычное рукопожатие Go. UserAgent — режим
+	// подстановки UA, см. fingerprint.ApplyHeaders.
+	Fingerprint *fingerprint.Profile
+	UserAgent   string
 	// Release освобождает ресурсы пула. Может быть nil.
 	Release func()
 }

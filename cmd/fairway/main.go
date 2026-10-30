@@ -29,6 +29,7 @@ import (
 	"fairway/internal/admin"
 	"fairway/internal/config"
 	"fairway/internal/events"
+	"fairway/internal/fingerprint"
 	"fairway/internal/forward"
 	"fairway/internal/i18n"
 	"fairway/internal/mitmca"
@@ -301,7 +302,7 @@ func router(pool *proxypool.Pool) func(string, []string) (*forward.Route, error)
 		if err != nil {
 			return nil, err
 		}
-		return &forward.Route{
+		route := &forward.Route{
 			Upstream: lease.Proxy.Upstream,
 			Name:     lease.Proxy.Name,
 			ID:       lease.Proxy.ID,
@@ -309,8 +310,12 @@ func router(pool *proxypool.Pool) func(string, []string) (*forward.Route, error)
 			// Таймауты из правила домена; ноль — умолчания сервера.
 			ConnectTimeout:  lease.Rule.ConnectTimeout,
 			ResponseTimeout: lease.Rule.ResponseTimeout,
+			UserAgent:       lease.Rule.UserAgent,
 			Release:         lease.Release,
-		}, nil
+		}
+		// Имя проверено при загрузке конфига.
+		route.Fingerprint, _ = fingerprint.Lookup(lease.Rule.TLSFingerprint)
+		return route, nil
 	}
 }
 

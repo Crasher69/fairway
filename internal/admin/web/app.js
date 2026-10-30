@@ -347,7 +347,8 @@ function renderRule(rule) {
     chips.push(
       chip(t('pattern'), rule.pattern),
       chip(t('list'), rule.list),
-      chip('TLS', rule.mitm ? t('decrypt') : t('tunnel')),
+      chip('TLS', (rule.mitm ? t('decrypt') : t('tunnel'))
+        + (rule.tls_fingerprint ? ' · ' + rule.tls_fingerprint : '')),
       chip(t('proxies at once'), rule.max_parallel_proxies || t('unlimited')),
       chip(t('connections per proxy'), rule.max_conns_per_proxy || t('unlimited')),
       chip(t('ban'), humanDuration(rule.ban_duration)
@@ -1527,6 +1528,7 @@ async function refreshSettings() {
     lists: cfg.lists || [],
     domains: cfg.domains || [],
     defaults: cfg.defaults || {},
+    fingerprints: cfg.fingerprints || [],
   };
   // Отметки на исчезнувших прокси снимаем.
   const names = new Set(settings.proxies.map((p) => p.name));
@@ -2097,7 +2099,7 @@ function renderRuleTable() {
     tr.append(
       pattern,
       textCell(d.list),
-      textCell(mitm),
+      textCell(d.tls_fingerprint ? mitm + ' · ' + d.tls_fingerprint : mitm),
       inherited(d.max_parallel_proxies, settings.defaults.max_parallel_proxies, limit),
       inherited(d.max_conns_per_proxy, settings.defaults.max_conns_per_proxy, limit),
       inherited(d.ban_duration, settings.defaults.ban_duration, (v) => (v ? humanDuration(v) : t('off'))),
@@ -2139,6 +2141,11 @@ function startRuleEdit(rule) {
   form.max_ban_duration.value = rule.max_ban_duration || '';
   form.connect_timeout.value = rule.connect_timeout || '';
   form.response_timeout.value = rule.response_timeout || '';
+  form.tls_fingerprint.value = rule.tls_fingerprint || '';
+  const ua = rule.user_agent || '';
+  form.ua_mode.value = ua === '' || ua === 'profile' ? ua : 'custom';
+  form.user_agent.value = form.ua_mode.value === 'custom' ? ua : '';
+  syncUserAgentFields();
   $('rule-form-title').textContent = t('Edit rule: {pattern}', { pattern: rule.pattern });
   $('rule-form-cancel').hidden = false;
   openPanel('rule-form-card');
@@ -2147,12 +2154,25 @@ function startRuleEdit(rule) {
 function resetRuleForm() {
   editing.rule = null;
   $('rule-form').reset();
+  syncUserAgentFields();
   $('rule-form-title').textContent = t('Add rule');
   $('rule-form-cancel').hidden = true;
   closePanel('rule-form-card');
 }
 
 $('rule-form-cancel').onclick = resetRuleForm;
+
+// syncUserAgentFields: UA подставляется только вместе с отпечатком, а поле
+// своей строки нужно только в режиме «свой».
+function syncUserAgentFields() {
+  const form = $('rule-form');
+  if (!form.tls_fingerprint.value) form.ua_mode.value = '';
+  form.ua_mode.disabled = !form.tls_fingerprint.value;
+  $('rule-ua-custom').hidden = form.ua_mode.value !== 'custom';
+}
+
+$('rule-form').tls_fingerprint.onchange = syncUserAgentFields;
+$('rule-form').ua_mode.onchange = syncUserAgentFields;
 
 $('rule-form').onsubmit = (event) => {
   event.preventDefault();
@@ -2168,6 +2188,11 @@ $('rule-form').onsubmit = (event) => {
     response_timeout: form.response_timeout.value.trim(),
   };
   if (form.mitm.checked) rule.mitm = true;
+  if (form.tls_fingerprint.value) {
+    rule.tls_fingerprint = form.tls_fingerprint.value;
+    if (form.ua_mode.value === 'profile') rule.user_agent = 'profile';
+    if (form.ua_mode.value === 'custom' && form.user_agent.value.trim()) rule.user_agent = form.user_agent.value.trim();
+  }
 
   const previous = editing.rule;
   edit(() => send('PUT', 'api/domains', rule)
@@ -2204,6 +2229,15 @@ function fillListSelects() {
     ...names.map((name) => new Option(name, name)),
   );
   defaultsSelect.value = names.includes(defaultsPrevious) ? defaultsPrevious : (settings.defaults.list || '');
+
+  const fpSelect = $('rule-fingerprint-select');
+  const fpPrevious = fpSelect.value;
+  fpSelect.replaceChildren(
+    new Option(t('— none —'), ''),
+    ...settings.fingerprints.map((name) => new Option(name, name)),
+  );
+  if (settings.fingerprints.includes(fpPrevious)) fpSelect.value = fpPrevious;
+  syncUserAgentFields();
 }
 
 function fillDefaults() {

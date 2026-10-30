@@ -67,6 +67,9 @@ var ru = map[string]string{
 	"connection error":                                                            "ошибка соединения",
 	"defaults: a timeout cannot be negative":                                      "defaults: таймаут не может быть отрицательным",
 	"domains[%d] (%s): a timeout cannot be negative":                              "domains[%d] (%s): таймаут не может быть отрицательным",
+	"domains[%d] (%s): unknown TLS fingerprint %q, available: %s":                 "domains[%d] (%s): неизвестный TLS-отпечаток %q, есть: %s",
+	"domains[%d] (%s): user_agent works only together with tls_fingerprint":       "domains[%d] (%s): user_agent работает только вместе с tls_fingerprint",
+	"fingerprint %s: %w":                                                          "отпечаток %s: %w",
 	"pattern %q: only \"example.com\", \"*.example.com\" and \"*\" are supported": "паттерн %q: поддерживаются только \"example.com\", \"*.example.com\" и \"*\"",
 
 	// --- импорт ---

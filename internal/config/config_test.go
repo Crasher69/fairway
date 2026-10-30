@@ -19,7 +19,7 @@ const valid = `{
   "lists": [{"name": "ru", "proxies": ["p1", "p2"]}],
   "domains": [
     {"pattern": "example.com", "list": "ru", "max_parallel_proxies": 2},
-    {"pattern": "*.example.com", "list": "ru", "mitm": true, "ban_duration": "1m"}
+    {"pattern": "*.example.com", "list": "ru", "mitm": true, "ban_duration": "1m", "tls_fingerprint": "chrome_133", "user_agent": "profile"}
   ]
 }`
 
@@ -60,6 +60,8 @@ func TestParseRejects(t *testing.T) {
 		"лимит меньше -1":              `{"proxies":[{"name":"p","url":"http://1.1.1.1:80"}],"lists":[{"name":"l","proxies":["p"]}],"domains":[{"pattern":"a.com","list":"l","max_conns_per_proxy":-5}]}`,
 		"отрицательный таймаут":        `{"defaults":{"connect_timeout":"-1s"}}`,
 		"отрицательный таймаут домена": `{"proxies":[{"name":"p","url":"http://1.1.1.1:80"}],"lists":[{"name":"l","proxies":["p"]}],"domains":[{"pattern":"a.com","list":"l","response_timeout":"-1s"}]}`,
+		"неизвестный отпечаток":        `{"proxies":[{"name":"p","url":"http://1.1.1.1:80"}],"lists":[{"name":"l","proxies":["p"]}],"domains":[{"pattern":"a.com","list":"l","tls_fingerprint":"netscape_4"}]}`,
+		"UA без отпечатка":             `{"proxies":[{"name":"p","url":"http://1.1.1.1:80"}],"lists":[{"name":"l","proxies":["p"]}],"domains":[{"pattern":"a.com","list":"l","user_agent":"profile"}]}`,
 	}
 	for name, raw := range tests {
 		if cfg, err := Parse([]byte(raw)); err == nil {

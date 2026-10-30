@@ -286,6 +286,7 @@ type ruleView struct {
 	MaxBanDuration  string `json:"max_ban_duration,omitempty"`
 	ConnectTimeout  string `json:"connect_timeout"`
 	ResponseTimeout string `json:"response_timeout"`
+	TLSFingerprint  string `json:"tls_fingerprint,omitempty"`
 	Known           bool   `json:"known"`
 }
 
@@ -306,6 +307,7 @@ func (s *Server) domain(w http.ResponseWriter, r *http.Request) {
 			BanDuration:        rule.BanDuration.String(),
 			ConnectTimeout:     rule.ConnectTimeout.String(),
 			ResponseTimeout:    rule.ResponseTimeout.String(),
+			TLSFingerprint:     rule.TLSFingerprint,
 			Known:              true,
 		}
 		if rule.MaxBanDuration > rule.BanDuration && rule.BanDuration > 0 {
