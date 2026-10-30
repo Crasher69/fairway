@@ -153,6 +153,31 @@ func TestEveryProfileHandshakes(t *testing.T) {
 	}
 }
 
+// Отпечаток Akamai складывается из SETTINGS по порядку, окна соединения и
+// порядка псевдозаголовков — транспорт должен взять их из профиля как есть.
+func TestH2TransportFollowsProfile(t *testing.T) {
+	chrome, _ := fingerprint.Lookup("chrome_133")
+	tr := h2Transport(chrome)
+	var got []string
+	for _, id := range tr.SettingsOrder {
+		got = append(got, fmt.Sprintf("%d:%d", id, tr.Settings[id]))
+	}
+	if strings.Join(got, ";") != "1:65536;2:0;4:6291456;6:262144" {
+		t.Errorf("SETTINGS: %v", got)
+	}
+	if tr.ConnectionFlow != 15663105 || strings.Join(tr.PseudoHeaderOrder, ",") != ":method,:authority,:scheme,:path" {
+		t.Errorf("окно %d, псевдозаголовки %v", tr.ConnectionFlow, tr.PseudoHeaderOrder)
+	}
+	if h2Transport(chrome) != tr {
+		t.Error("транспорт профиля должен создаваться один раз")
+	}
+
+	firefox, _ := fingerprint.Lookup("firefox_120")
+	if ff := h2Transport(firefox); len(ff.Priorities) != 6 || ff.InitialStreamID != 15 || ff.HeaderPriority == nil {
+		t.Errorf("Firefox: PRIORITY %d, первый поток %d", len(ff.Priorities), ff.InitialStreamID)
+	}
+}
+
 func TestFingerprintKeepsClientUserAgentByDefault(t *testing.T) {
 	var ua string
 	h, _ := newFingerprintHarness(t, "firefox_120", fingerprint.UAKeep, func(w http.ResponseWriter, r *http.Request) {
