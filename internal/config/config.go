@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"fairway/internal/fingerprint"
 	"fairway/internal/forward"
 	"fairway/internal/i18n"
 )
@@ -324,6 +325,14 @@ type Domain struct {
 	// ConnectTimeout и ResponseTimeout — как в defaults; пусто — оттуда.
 	ConnectTimeout  Duration `json:"connect_timeout,omitempty"`
 	ResponseTimeout Duration `json:"response_timeout,omitempty"`
+	// TLSFingerprint — под какой браузер подделывать TLS-рукопожатие с
+	// сайтом ("chrome_133", "firefox_120"…). Работает только с MITM: без
+	// расшифровки рукопожатие делает сам клиент. Пусто — рукопожатие Go.
+	TLSFingerprint string `json:"tls_fingerprint,omitempty"`
+	// UserAgent — что ставить в User-Agent запроса к сайту: пусто — как
+	// прислал клиент, "profile" — UA и client hints браузера из
+	// tls_fingerprint, иначе — сама строка. Без tls_fingerprint не действует.
+	UserAgent string `json:"user_agent,omitempty"`
 }
 
 // Duration — time.Duration, записанный в JSON строкой: "5m", "1h30m".
@@ -485,6 +494,10 @@ func (c *Config) Validate() error {
 			return i18n.Errorf("domains[%d] (%s): a timeout cannot be negative", i, d.Pattern)
 		case d.BanDuration < 0 || d.MaxBanDuration < 0:
 			return i18n.Errorf("domains[%d] (%s): a ban duration cannot be negative", i, d.Pattern)
+		case d.TLSFingerprint != "" && !fingerprintKnown(d.TLSFingerprint):
+			return i18n.Errorf("domains[%d] (%s): unknown TLS fingerprint %q, available: %s", i, d.Pattern, d.TLSFingerprint, strings.Join(fingerprint.Names(), ", "))
+		case d.UserAgent != "" && d.TLSFingerprint == "":
+			return i18n.Errorf("domains[%d] (%s): user_agent works only together with tls_fingerprint", i, d.Pattern)
 		}
 		if err := validatePattern(d.Pattern); err != nil {
 			return fmt.Errorf("domains[%d]: %w", i, err)
@@ -612,4 +625,10 @@ func writeFileAtomic(path string, data []byte) error {
 		d.Close()
 	}
 	return nil
+}
+
+// fingerprintKnown — есть ли такой профиль TLS-отпечатка.
+func fingerprintKnown(name string) bool {
+	_, ok := fingerprint.Lookup(name)
+	return ok
 }

@@ -437,6 +437,22 @@
             <input name="response_timeout" placeholder="60s" size="8">
           </label>
         </div>
+        <div class="fields">
+          <label class="field"><span data-t>Browser TLS fingerprint</span>
+            <select name="tls_fingerprint" id="rule-fingerprint-select"></select>
+          </label>
+          <label class="field"><span data-t>User-Agent</span>
+            <select name="ua_mode">
+              <option value="" data-t>as sent by the client</option>
+              <option value="profile" data-t>from the fingerprint</option>
+              <option value="custom" data-t>custom</option>
+            </select>
+          </label>
+          <label class="field field-wide" id="rule-ua-custom" hidden><span data-t>Custom User-Agent</span>
+            <input name="user_agent" placeholder="Mozilla/5.0 …">
+          </label>
+        </div>
+        <p class="hint" data-t>The fingerprint works only with “decrypt TLS”: the handshake with the site looks like the chosen browser's (JA3/JA4), and the site may answer over HTTP/2. “From the fingerprint” also sets the matching User-Agent and sec-ch-ua headers.</p>
         <div class="form-actions">
           <button class="primary" data-t>Save rule</button>
           <button type="button" class="ghost" id="rule-form-cancel" hidden data-t>Cancel</button>

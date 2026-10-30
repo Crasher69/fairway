@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/http2"
+
 	"fairway/internal/challenge"
 	"fairway/internal/i18n"
 )
@@ -176,6 +178,11 @@ func (s *Server) roundTrip(up *mitmUpstream, client net.Conn, clientReader *bufi
 		req.Header.Set("Connection", "Upgrade")
 		req.Header.Set("Upgrade", upgrade)
 	}
+	// UA должен совпадать с браузером из отпечатка: Chrome-рукопожатие с
+	// заголовками curl или Firefox анти-бот замечает так же легко.
+	if fp := up.route.Fingerprint; fp != nil {
+		fp.ApplyHeaders(req.Header, up.route.UserAgent)
+	}
 	// Brotli и zstd распаковывать нечем, а в сжатое тело не заглянуть —
 	// оставляем клиенту только gzip и deflate. Так делают все MITM-прокси.
 	if accept := challenge.AcceptEncoding(req.Header.Values("Accept-Encoding")); accept != "" {
@@ -199,12 +206,12 @@ func (s *Server) roundTrip(up *mitmUpstream, client net.Conn, clientReader *bufi
 		firstByte    time.Time
 	)
 	for {
-		conn, connect, fresh, err := up.connection()
+		_, connect, fresh, err := up.connection(upgrade != "")
 		sample.Connect = connect
 		sample.Reused = !fresh
 		var received bool
 		if err == nil {
-			resp, targetReader, ttfb, firstByte, received, err = exchange(conn, req, s.responseTimeout(up.route))
+			resp, targetReader, ttfb, firstByte, received, err = up.exchange(req)
 			if err != nil && retriable && !fresh && !received && (idempotent(req) || !timedOut(err)) {
 				// Цель могла закрыть keep-alive соединение, пока оно простаивало, —
 				// это штатная ситуация, а не отказ прокси. Повторяем только если от
@@ -213,12 +220,12 @@ func (s *Server) roundTrip(up *mitmUpstream, client net.Conn, clientReader *bufi
 				// Таймаут — не мёртвый keep-alive: запрос дошёл, и цель его,
 				// возможно, выполняет. POST после него не повторяется.
 				up.close()
-				conn, connect, _, err = up.connection()
+				_, connect, _, err = up.connection(upgrade != "")
 				sample.Connect = connect
 				sample.Reused = false
 				if err == nil {
 					rewind()
-					resp, targetReader, ttfb, firstByte, received, err = exchange(conn, req, s.responseTimeout(up.route))
+					resp, targetReader, ttfb, firstByte, received, err = up.exchange(req)
 				}
 			}
 		}
@@ -455,12 +462,21 @@ type mitmUpstream struct {
 	origin *tls.Config
 
 	conn net.Conn
+	// h2 — HTTP/2 поверх conn, если сайт выбрал его в ALPN. Бывает только
+	// с профилем отпечатка: обычное рукопожатие предлагает лишь http/1.1.
+	h2 *http2.ClientConn
 }
 
 // connection отдаёт живое соединение, устанавливая его при необходимости.
 // Возвращает время установки и признак того, что соединение только что создано:
 // на переиспользованном connect не измеряется и в рейтинг не попадает.
-func (u *mitmUpstream) connection() (net.Conn, time.Duration, bool, error) {
+//
+// h1only — запросу нужен HTTP/1.1 (WebSocket): соединение по HTTP/2 для
+// него закрывается и открывается новое, с одним http/1.1 в ALPN.
+func (u *mitmUpstream) connection(h1only bool) (net.Conn, time.Duration, bool, error) {
+	if u.h2 != nil && (h1only || !u.h2.CanTakeNewRequest()) {
+		u.close()
+	}
 	if u.conn != nil {
 		return u.conn, 0, false, nil
 	}
@@ -477,10 +493,31 @@ func (u *mitmUpstream) connection() (net.Conn, time.Duration, bool, error) {
 		cfg = u.origin.Clone()
 	}
 	cfg.ServerName = hostOnly(u.target)
+
+	if fp := u.route.Fingerprint; fp != nil {
+		// Рукопожатие браузера: версии, шифры и ALPN — из профиля, а не
+		// из cfg, иначе отпечаток выдал бы подмену.
+		tlsConn, proto, err := fp.Client(ctx, raw, cfg, h1only)
+		if err != nil {
+			raw.Close()
+			return nil, time.Since(started), true, err
+		}
+		if proto == "h2" {
+			cc, err := newH2Conn(tlsConn)
+			if err != nil {
+				tlsConn.Close()
+				return nil, time.Since(started), true, err
+			}
+			u.h2 = cc
+		}
+		u.conn = tlsConn
+		return u.conn, time.Since(started), true, nil
+	}
+
 	if cfg.MinVersion == 0 {
 		cfg.MinVersion = tls.VersionTLS12
 	}
-	cfg.NextProtos = []string{"http/1.1"} // разбирается только HTTP/1.x
+	cfg.NextProtos = []string{"http/1.1"} // без профиля разбирается только HTTP/1.x
 	tlsConn := tls.Client(raw, cfg)
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		raw.Close()
@@ -490,7 +527,22 @@ func (u *mitmUpstream) connection() (net.Conn, time.Duration, bool, error) {
 	return u.conn, time.Since(started), true, nil
 }
 
+// exchange отправляет запрос по текущему соединению: по HTTP/2, если сайт
+// его выбрал, иначе по HTTP/1.1. Ридер цели есть только у HTTP/1.1.
+func (u *mitmUpstream) exchange(req *http.Request) (*http.Response, *bufio.Reader, time.Duration, time.Time, bool, error) {
+	wait := u.srv.responseTimeout(u.route)
+	if u.h2 != nil {
+		resp, ttfb, first, received, err := exchangeH2(u.h2, req, wait)
+		return resp, nil, ttfb, first, received, err
+	}
+	return exchange(u.conn, req, wait)
+}
+
 func (u *mitmUpstream) close() {
+	if u.h2 != nil {
+		u.h2.Close()
+		u.h2 = nil
+	}
 	if u.conn != nil {
 		u.conn.Close()
 		u.conn = nil

@@ -256,6 +256,27 @@ above). Raise `response_timeout` for a site
 that is slow to think (reports, exports), or healthy proxies get banned for
 it. A config without timeouts gets `15s` and `1m` in `defaults` on load.
 
+With MITM the connection to the site is made by Fairway itself, and by default
+the site sees the TLS handshake of a Go client. Sites that filter by JA3/JA4
+cut such traffic even when the request came from a real browser. A domain rule
+can make the handshake look like a browser's:
+
+```json
+{"pattern": "shop.example.com", "list": "residential", "mitm": true,
+ "tls_fingerprint": "chrome_133", "user_agent": "profile"}
+```
+
+- `tls_fingerprint` — `chrome_133`, `chrome_131`, `chrome_120`, `firefox_120`,
+  `safari_16` or `ios_14`. The ClientHello, including ALPN, is that browser's,
+  so the site usually answers over HTTP/2; WebSocket goes over a separate
+  HTTP/1.1 connection, as in a browser. Works only together with `mitm`;
+- `user_agent` — empty: the client's headers as they are; `profile`: the
+  User-Agent and `sec-ch-ua*` of the same browser; any other string: that
+  User-Agent. A Chrome handshake with a curl User-Agent gives itself away just
+  as easily.
+
+The HTTP/2 SETTINGS (the Akamai fingerprint) and header order are still Go's.
+
 Two limits are easy to mix up:
 
 - `max_parallel_proxies` — how many **different** proxies from the list work

@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"fairway/internal/config"
+	"fairway/internal/fingerprint"
 	"fairway/internal/i18n"
 )
 
@@ -18,11 +19,13 @@ type configResponse struct {
 	*config.Config
 	AdminPassword string `json:"admin_password,omitempty"`
 	PasswordSet   bool   `json:"password_set"`
+	// Fingerprints — профили TLS-отпечатка для выбора в правиле домена.
+	Fingerprints []string `json:"fingerprints"`
 }
 
 func (s *Server) config(w http.ResponseWriter, r *http.Request) {
 	cfg := s.Config()
-	writeJSON(w, configResponse{Config: cfg, PasswordSet: cfg.AdminPassword != ""})
+	writeJSON(w, configResponse{Config: cfg, PasswordSet: cfg.AdminPassword != "", Fingerprints: fingerprint.Names()})
 }
 
 func (s *Server) addProxy(w http.ResponseWriter, r *http.Request) {

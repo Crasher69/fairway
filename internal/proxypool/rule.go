@@ -21,6 +21,10 @@ type Rule struct {
 	MaxBanDuration  time.Duration
 	ConnectTimeout  time.Duration
 	ResponseTimeout time.Duration
+	// TLSFingerprint и UserAgent — подмена браузера при MITM, как в
+	// правиле домена. В defaults их нет.
+	TLSFingerprint string
+	UserAgent      string
 }
 
 // ruleSet — скомпилированные правила: точные имена, wildcard-суффиксы и
@@ -53,6 +57,8 @@ func compileRules(cfg *config.Config) *ruleSet {
 			MaxBanDuration:     inheritDuration(dom.MaxBanDuration, d.MaxBanDuration),
 			ConnectTimeout:     inheritDuration(dom.ConnectTimeout, d.ConnectTimeout),
 			ResponseTimeout:    inheritDuration(dom.ResponseTimeout, d.ResponseTimeout),
+			TLSFingerprint:     dom.TLSFingerprint,
+			UserAgent:          dom.UserAgent,
 		}
 		if dom.MITM != nil {
 			r.MITM = *dom.MITM
