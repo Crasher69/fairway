@@ -13,8 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/net/http2"
-
 	"fairway/internal/challenge"
 	"fairway/internal/i18n"
 )
@@ -464,7 +462,7 @@ type mitmUpstream struct {
 	conn net.Conn
 	// h2 — HTTP/2 поверх conn, если сайт выбрал его в ALPN. Бывает только
 	// с профилем отпечатка: обычное рукопожатие предлагает лишь http/1.1.
-	h2 *http2.ClientConn
+	h2 *h2Conn
 }
 
 // connection отдаёт живое соединение, устанавливая его при необходимости.
@@ -503,7 +501,7 @@ func (u *mitmUpstream) connection(h1only bool) (net.Conn, time.Duration, bool, e
 			return nil, time.Since(started), true, err
 		}
 		if proto == "h2" {
-			cc, err := newH2Conn(tlsConn)
+			cc, err := newH2Conn(tlsConn, fp)
 			if err != nil {
 				tlsConn.Close()
 				return nil, time.Since(started), true, err

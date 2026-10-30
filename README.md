@@ -275,7 +275,11 @@ can make the handshake look like a browser's:
   User-Agent. A Chrome handshake with a curl User-Agent gives itself away just
   as easily.
 
-The HTTP/2 SETTINGS (the Akamai fingerprint) and header order are still Go's.
+Over HTTP/2 the profile also sets what the Akamai fingerprint is made of: the
+SETTINGS frame with its order, the connection WINDOW_UPDATE, PRIORITY frames
+(old Firefox), the pseudo-header order and the priority in HEADERS, plus the
+order of regular headers. Chrome 133, for one, gives
+`1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p`, the same as the browser.
 
 Two limits are easy to mix up:
 
